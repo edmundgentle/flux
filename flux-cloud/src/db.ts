@@ -3,10 +3,13 @@ import { Pool } from 'pg';
 let pool: Pool | undefined;
 
 export function getPool(databaseUrl: string): Pool {
+  const isLocal = /localhost|127\.0\.0\.1/.test(databaseUrl);
+  const connectionString = isLocal ? databaseUrl : withoutSslMode(databaseUrl);
+
   if (!pool) {
     pool = new Pool({
-      connectionString: databaseUrl,
-      ssl: /localhost|127\.0\.0\.1/.test(databaseUrl)
+      connectionString,
+      ssl: isLocal
         ? false
         : process.env.DATABASE_CA_CERT
           ? { rejectUnauthorized: true, ca: process.env.DATABASE_CA_CERT }
@@ -14,6 +17,12 @@ export function getPool(databaseUrl: string): Pool {
     });
   }
   return pool;
+}
+
+function withoutSslMode(databaseUrl: string): string {
+  const url = new URL(databaseUrl);
+  url.searchParams.delete('sslmode');
+  return url.toString();
 }
 
 export async function migrate(pool: Pool): Promise<void> {
