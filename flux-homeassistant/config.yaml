@@ -1,0 +1,34 @@
+name: Flux
+version: "1.0.0"
+slug: flux
+description: Local personal search, file management, and vision analysis server.
+arch:
+  - amd64
+  - aarch64
+startup: services
+boot: auto
+ports:
+  8080/tcp: 8080
+map:
+  - config:rw
+  - share:rw
+  - media:rw
+options:
+  data_dir: /config/search_vision
+  scan_dirs:
+    - /share
+    - /media
+  tenant_id: ""
+  websocket_url: ""
+  websocket_token: ""
+schema:
+  data_dir: str
+  scan_dirs:
+    - str
+  tenant_id: str?
+  websocket_url: str?
+  websocket_token: password?
+privileged:
+  - SYS_ADMIN
+devices:
+  - /dev/fuse

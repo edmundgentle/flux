@@ -1,0 +1,14 @@
+/Users/edmundgentle/Development/flux-homeassistant/target/debug/deps/serde-96d95b238a99b9be.d: /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/edmundgentle/Development/flux-homeassistant/target/debug/build/serde-eaa3de96a870a152/out/private.rs
+
+/Users/edmundgentle/Development/flux-homeassistant/target/debug/deps/libserde-96d95b238a99b9be.rlib: /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/edmundgentle/Development/flux-homeassistant/target/debug/build/serde-eaa3de96a870a152/out/private.rs
+
+/Users/edmundgentle/Development/flux-homeassistant/target/debug/deps/libserde-96d95b238a99b9be.rmeta: /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/edmundgentle/Development/flux-homeassistant/target/debug/build/serde-eaa3de96a870a152/out/private.rs
+
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/Users/edmundgentle/Development/flux-homeassistant/target/debug/build/serde-eaa3de96a870a152/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/edmundgentle/Development/flux-homeassistant/target/debug/build/serde-eaa3de96a870a152/out

@@ -1,0 +1,12 @@
+/Users/edmundgentle/Development/flux/flux-homeassistant/target/debug/deps/serde-3ddd0cfe4f4c5b4e.d: /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/edmundgentle/Development/flux/flux-homeassistant/target/debug/build/serde-eaa3de96a870a152/out/private.rs
+
+/Users/edmundgentle/Development/flux/flux-homeassistant/target/debug/deps/libserde-3ddd0cfe4f4c5b4e.rmeta: /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/edmundgentle/Development/flux/flux-homeassistant/target/debug/build/serde-eaa3de96a870a152/out/private.rs
+
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/edmundgentle/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/Users/edmundgentle/Development/flux/flux-homeassistant/target/debug/build/serde-eaa3de96a870a152/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/edmundgentle/Development/flux/flux-homeassistant/target/debug/build/serde-eaa3de96a870a152/out

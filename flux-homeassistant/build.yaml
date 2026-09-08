@@ -1,0 +1,3 @@
+build_from:
+  amd64: rust:1.88-slim-bookworm
+  aarch64: rust:1.88-slim-bookworm

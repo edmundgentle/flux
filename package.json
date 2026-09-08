@@ -1,0 +1,27 @@
+{
+  "name": "flux",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "flux-cloud",
+    "flux-sdk",
+    "flux-photos"
+  ],
+  "scripts": {
+    "build": "npm run build:cloud && npm run build:sdk && npm run build:photos && npm run build:homeassistant",
+    "build:cloud": "npm --prefix flux-cloud run build",
+    "build:sdk": "npm --prefix flux-sdk run build",
+    "build:photos": "npm --prefix flux-photos run check",
+    "build:photos:web": "npm --prefix flux-photos run export:web",
+    "build:homeassistant": "cargo build --manifest-path flux-homeassistant/Cargo.toml --release",
+    "check": "npm run check:cloud && npm run check:sdk && npm run check:photos",
+    "check:cloud": "npm --prefix flux-cloud run build",
+    "check:sdk": "npm --prefix flux-sdk run check",
+    "check:photos": "npm --prefix flux-photos run check",
+    "test": "npm run test:cloud && npm run test:sdk && cargo test --manifest-path flux-homeassistant/Cargo.toml",
+    "test:cloud": "npm --prefix flux-cloud test",
+    "test:sdk": "npm --prefix flux-sdk test",
+    "verify": "npm run check && npm test",
+    "deploy:check": "npm run verify && npm run build:photos:web && docker build -t flux-homeassistant:deploy-check ./flux-homeassistant"
+  }
+}
