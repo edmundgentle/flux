@@ -26,7 +26,7 @@ services:
       http_path: /health
 databases:
   - name: db
-    cluster_name: flux-db
+    cluster_name: flux-db-prod
     engine: PG
     production: true
     version: "16"

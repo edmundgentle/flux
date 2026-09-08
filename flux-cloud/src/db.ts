@@ -8,7 +8,9 @@ export function getPool(databaseUrl: string): Pool {
       connectionString: databaseUrl,
       ssl: /localhost|127\.0\.0\.1/.test(databaseUrl)
         ? false
-        : { rejectUnauthorized: true, ca: process.env.DATABASE_CA_CERT },
+        : process.env.DATABASE_CA_CERT
+          ? { rejectUnauthorized: true, ca: process.env.DATABASE_CA_CERT }
+          : { rejectUnauthorized: false },
     });
   }
   return pool;
