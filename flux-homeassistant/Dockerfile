@@ -52,4 +52,4 @@ EXPOSE 8080
 ENV RUST_LOG=info
 
 # Start the application
-CMD ["/bin/sh", "-c", "echo '[diagnostic] container entrypoint reached'; /app/server; echo \"[diagnostic] server exited with code $?\""]
+CMD ["/bin/sh", "-c", "trap 'echo \"[diagnostic] signal received at $(date +%s.%N)\"' TERM INT; echo \"[diagnostic] entrypoint reached at $(date +%s.%N), pid=$$\"; /app/server & pid=$!; wait $pid; echo \"[diagnostic] server (pid $pid) exited with code $? at $(date +%s.%N)\""]
