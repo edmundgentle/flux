@@ -52,4 +52,4 @@ EXPOSE 8080
 ENV RUST_LOG=info
 
 # Start the application
-CMD ["/app/server"]
+CMD ["/bin/sh", "-c", "echo '[diagnostic] container entrypoint reached'; /app/server; echo \"[diagnostic] server exited with code $?\""]
