@@ -17,6 +17,7 @@ use auth::AccountManager;
 use sharing::ShareRegistry;
 
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -119,12 +120,14 @@ async fn main() {
     };
 
     // 7. Start outbound WebSocket client/bridge
+    let bridge_connected = Arc::new(AtomicBool::new(false));
     let bridge_config = config_manager.get_config_arc();
     let bridge_sm = search_manager.clone();
     let bridge_reg = share_registry.clone();
     let bridge_accounts = account_manager.clone();
+    let bridge_connected_flag = bridge_connected.clone();
     tokio::spawn(async move {
-        WebSocketBridge::start(bridge_config, bridge_sm, bridge_reg, bridge_accounts).await;
+        WebSocketBridge::start(bridge_config, bridge_sm, bridge_reg, bridge_accounts, bridge_connected_flag).await;
     });
 
     // 8. Setup and start REST API
@@ -133,6 +136,7 @@ async fn main() {
         search_manager,
         share_registry,
         account_manager,
+        bridge_connected,
     };
     
     let app = create_router(state);

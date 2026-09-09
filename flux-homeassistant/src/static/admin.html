@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Flux Admin Dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e5e7eb;
+    --muted: #9ca3af;
+    --accent: #3b82f6;
+    --ok: #22c55e;
+    --bad: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .dot.bad { background: var(--bad); box-shadow: 0 0 6px var(--bad); }
+  main { padding: 24px; max-width: 1000px; margin: 0 auto; }
+  .login-panel, .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  input[type="text"], input[type="password"] {
+    background: #0d0f14;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  button.secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  tr.user-row:hover { background: rgba(255,255,255,0.02); }
+  .role-admin { color: var(--accent); }
+  .file-browser { display: none; padding: 8px 0 4px 0; }
+  .file-browser.open { display: block; }
+  .breadcrumb { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .breadcrumb button { background: none; border: none; color: var(--accent); padding: 0 2px; font-size: 13px; cursor: pointer; }
+  .entry-row { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .entry-row .icon { width: 18px; text-align: center; }
+  .entry-row .name { flex: 1; cursor: pointer; }
+  .entry-row .name.dir { color: var(--accent); }
+  .entry-row .meta { color: var(--muted); font-size: 12px; }
+  .error { color: var(--bad); font-size: 13px; margin-top: 8px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Flux Admin Dashboard</h1>
+  <span id="cloud-badge" class="badge"><span class="dot" id="cloud-dot"></span><span id="cloud-text">Unknown</span></span>
+</header>
+<main>
+  <section class="login-panel" id="login-panel">
+    <div class="toolbar">
+      <input type="text" id="token-input" placeholder="Paste admin auth token" size="40" />
+      <button id="connect-btn">Connect</button>
+    </div>
+    <div class="muted">Log in via <code>/api/auth/login</code> and paste the returned token here. Only admin accounts can view this dashboard.</div>
+    <div class="error" id="login-error"></div>
+  </section>
+
+  <section class="panel" id="users-panel" style="display:none;">
+    <div class="toolbar">
+      <strong>Connected Users</strong>
+      <button class="secondary" id="refresh-btn">Refresh</button>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Username</th><th>Display Name</th><th>Role</th><th>Created</th><th></th></tr>
+      </thead>
+      <tbody id="users-body"></tbody>
+    </table>
+    <div class="error" id="users-error"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  const state = { token: localStorage.getItem('flux_admin_token') || '', users: [] };
+
+  const el = (id) => document.getElementById(id);
+  const tokenInput = el('token-input');
+  const loginPanel = el('login-panel');
+  const usersPanel = el('users-panel');
+  const usersBody = el('users-body');
+  const loginError = el('login-error');
+  const usersError = el('users-error');
+  const cloudDot = el('cloud-dot');
+  const cloudText = el('cloud-text');
+
+  if (state.token) tokenInput.value = state.token;
+
+  function authHeaders() {
+    return { 'Authorization': 'Bearer ' + state.token };
+  }
+
+  function setCloudStatus(connected) {
+    cloudDot.className = 'dot ' + (connected ? 'ok' : 'bad');
+    cloudText.textContent = connected ? 'Cloud Connected' : 'Cloud Disconnected';
+  }
+
+  async function loadUsers() {
+    usersError.textContent = '';
+    try {
+      const res = await fetch('/api/admin/users', { headers: authHeaders() });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || ('Request failed with status ' + res.status));
+      }
+      const data = await res.json();
+      state.users = data.users;
+      setCloudStatus(data.cloud_connected);
+      renderUsers();
+      loginPanel.style.display = 'none';
+      usersPanel.style.display = 'block';
+      localStorage.setItem('flux_admin_token', state.token);
+    } catch (err) {
+      loginError.textContent = err.message;
+      usersPanel.style.display = 'none';
+      loginPanel.style.display = 'block';
+    }
+  }
+
+  function renderUsers() {
+    usersBody.innerHTML = '';
+    for (const user of state.users) {
+      const row = document.createElement('tr');
+      row.className = 'user-row';
+      row.innerHTML =
+        '<td>' + escapeHtml(user.username) + '</td>' +
+        '<td>' + escapeHtml(user.display_name || '-') + '</td>' +
+        '<td class="' + (user.role === 'admin' ? 'role-admin' : '') + '">' + escapeHtml(user.role) + '</td>' +
+        '<td>' + escapeHtml(formatDate(user.created_at)) + '</td>' +
+        '<td><button class="secondary browse-btn">Browse Files</button></td>';
+
+      const browserRow = document.createElement('tr');
+      const browserCell = document.createElement('td');
+      browserCell.colSpan = 5;
+      const browser = document.createElement('div');
+      browser.className = 'file-browser';
+      browser.dataset.user = user.username;
+      browser.dataset.path = '';
+      browserCell.appendChild(browser);
+      browserRow.appendChild(browserCell);
+
+      row.querySelector('.browse-btn').addEventListener('click', () => {
+        const isOpen = browser.classList.contains('open');
+        if (isOpen) {
+          browser.classList.remove('open');
+        } else {
+          browser.classList.add('open');
+          loadBrowser(browser, user.username, '');
+        }
+      });
+
+      usersBody.appendChild(row);
+      usersBody.appendChild(browserRow);
+    }
+  }
+
+  async function loadBrowser(container, username, path) {
+    container.dataset.path = path;
+    container.innerHTML = '<div class="muted">Loading...</div>';
+    try {
+      const url = '/api/admin/browse?user=' + encodeURIComponent(username) + '&path=' + encodeURIComponent(path);
+      const res = await fetch(url, { headers: authHeaders() });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || ('Request failed with status ' + res.status));
+      }
+      const data = await res.json();
+      renderBrowser(container, data);
+    } catch (err) {
+      container.innerHTML = '<div class="error">' + escapeHtml(err.message) + '</div>';
+    }
+  }
+
+  function renderBrowser(container, data) {
+    container.innerHTML = '';
+
+    const crumbBar = document.createElement('div');
+    crumbBar.className = 'breadcrumb';
+    const segments = data.relative_path ? data.relative_path.split('/').filter(Boolean) : [];
+    const rootBtn = document.createElement('button');
+    rootBtn.textContent = data.user + ' /';
+    rootBtn.addEventListener('click', () => loadBrowser(container, data.user, ''));
+    crumbBar.appendChild(rootBtn);
+    let accumPath = '';
+    for (const seg of segments) {
+      accumPath = accumPath ? accumPath + '/' + seg : seg;
+      const span = document.createTextNode(' / ');
+      crumbBar.appendChild(span);
+      const btn = document.createElement('button');
+      btn.textContent = seg;
+      const target = accumPath;
+      btn.addEventListener('click', () => loadBrowser(container, data.user, target));
+      crumbBar.appendChild(btn);
+    }
+    container.appendChild(crumbBar);
+
+    if (data.entries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'muted';
+      empty.textContent = 'Empty folder';
+      container.appendChild(empty);
+      return;
+    }
+
+    for (const entry of data.entries) {
+      const row = document.createElement('div');
+      row.className = 'entry-row';
+      const icon = document.createElement('span');
+      icon.className = 'icon';
+      icon.textContent = entry.is_dir ? '📁' : '📄';
+      const name = document.createElement('span');
+      name.className = 'name' + (entry.is_dir ? ' dir' : '');
+      name.textContent = entry.name;
+      if (entry.is_dir) {
+        name.addEventListener('click', () => loadBrowser(container, data.user, entry.relative_path));
+      }
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = entry.is_dir ? '' : formatSize(entry.size);
+      row.appendChild(icon);
+      row.appendChild(name);
+      row.appendChild(meta);
+      container.appendChild(row);
+    }
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+  }
+
+  function formatDate(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    return isNaN(date.getTime()) ? value : date.toLocaleString();
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  el('connect-btn').addEventListener('click', () => {
+    state.token = tokenInput.value.trim();
+    loadUsers();
+  });
+  el('refresh-btn').addEventListener('click', loadUsers);
+
+  if (state.token) loadUsers();
+})();
+</script>
+</body>
+</html>

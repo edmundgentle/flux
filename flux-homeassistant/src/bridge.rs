@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -71,6 +72,7 @@ impl WebSocketBridge {
         search_manager: SearchManager,
         share_registry: ShareRegistry,
         account_manager: AccountManager,
+        bridge_connected: Arc<AtomicBool>,
     ) {
         info!("Starting outbound WebSocket bridge background task");
 
@@ -87,6 +89,7 @@ impl WebSocketBridge {
             let url_str = match ws_url {
                 Some(ref url) if !url.trim().is_empty() => url.clone(),
                 _ => {
+                    bridge_connected.store(false, Ordering::SeqCst);
                     sleep(Duration::from_secs(10)).await;
                     continue;
                 }
@@ -94,12 +97,14 @@ impl WebSocketBridge {
 
             if tenant_id.as_deref().unwrap_or("").trim().is_empty() {
                 error!("WebSocket bridge is not configured with a tenant_id; skipping connection attempt until the relay tenant is set.");
+                bridge_connected.store(false, Ordering::SeqCst);
                 sleep(Duration::from_secs(10)).await;
                 continue;
             }
 
             if ws_token.as_deref().unwrap_or("").trim().is_empty() {
                 error!("WebSocket bridge is not configured with a websocket_token; set the relay tunnel token before connecting.");
+                bridge_connected.store(false, Ordering::SeqCst);
                 sleep(Duration::from_secs(10)).await;
                 continue;
             }
@@ -130,6 +135,7 @@ impl WebSocketBridge {
                         Ok((ws_stream, response)) => {
                             info!("Successfully connected to cloud relay! HTTP Status: {}", response.status());
                             backoff = Duration::from_secs(2);
+                            bridge_connected.store(true, Ordering::SeqCst);
 
                             let (mut ws_write, mut ws_read) = ws_stream.split();
                             let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
@@ -175,14 +181,17 @@ impl WebSocketBridge {
                             }
 
                             writer_handle.abort();
+                            bridge_connected.store(false, Ordering::SeqCst);
                             info!("WebSocket bridge connection closed, attempting reconnect...");
                         }
                         Err(e) => {
+                            bridge_connected.store(false, Ordering::SeqCst);
                             error!("Failed to connect to WebSocket endpoint: {}. Retrying...", e);
                         }
                     }
                 }
                 Err(e) => {
+                    bridge_connected.store(false, Ordering::SeqCst);
                     error!("Invalid WebSocket URL structure '{}': {}", url_str, e);
                 }
             }

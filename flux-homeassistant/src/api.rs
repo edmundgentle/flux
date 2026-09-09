@@ -6,12 +6,13 @@ use crate::sharing::{Share, ShareRegistry};
 use crate::storage::{MountInfo, StorageInfo, StorageManager};
 use axum::extract::{Multipart, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -23,6 +24,7 @@ pub struct AppState {
     pub search_manager: SearchManager,
     pub share_registry: ShareRegistry,
     pub account_manager: AccountManager,
+    pub bridge_connected: Arc<AtomicBool>,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +93,43 @@ pub struct UnshareRequest {
     pub user_to_remove: String, // "*" to revoke all
 }
 
+#[derive(Deserialize)]
+pub struct BrowseQueryParams {
+    pub user: String,
+    pub path: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct AccountSummary {
+    pub username: String,
+    pub display_name: Option<String>,
+    pub role: String,
+    pub created_at: String,
+}
+
+#[derive(Serialize)]
+pub struct AdminUsersResponse {
+    pub cloud_connected: bool,
+    pub tenant_id: Option<String>,
+    pub users: Vec<AccountSummary>,
+}
+
+#[derive(Serialize)]
+pub struct BrowseEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified_at: Option<String>,
+    pub relative_path: String,
+}
+
+#[derive(Serialize)]
+pub struct BrowseResponse {
+    pub user: String,
+    pub relative_path: String,
+    pub entries: Vec<BrowseEntry>,
+}
+
 #[derive(Serialize)]
 pub struct ShareListResponse {
     pub owned_shares: Vec<Share>,
@@ -125,6 +164,10 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/api/shares/share", post(share_file))
         .route("/api/shares/unshare", post(unshare_file))
         .route("/api/shares/list", get(list_shares))
+        // Admin dashboard endpoints
+        .route("/api/admin/users", get(list_admin_users))
+        .route("/api/admin/browse", get(browse_user_files))
+        .route("/ui", get(serve_admin_ui))
         .layer(CorsLayer::permissive())
         .layer(RequestBodyLimitLayer::new(25 * 1024 * 1024))
         .with_state(state)
@@ -828,6 +871,181 @@ async fn list_shares(
         owned_shares,
         shared_with_me,
     }))
+}
+
+// ==========================================
+// Admin dashboard handlers
+// ==========================================
+
+async fn require_admin(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<String, (StatusCode, Json<ApiResponse<()>>)> {
+    let requesting_user = get_request_user(headers, None, None, &state.account_manager)?;
+    if !state.account_manager.is_admin(&requesting_user) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiResponse {
+                success: false,
+                message: "Only 'admin' can access the dashboard".to_string(),
+                data: None,
+            }),
+        ));
+    }
+    Ok(requesting_user)
+}
+
+async fn list_admin_users(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Result<Json<AdminUsersResponse>, (StatusCode, Json<ApiResponse<()>>)> {
+    require_admin(&headers, &state).await?;
+
+    let mut users: Vec<AccountSummary> = state
+        .account_manager
+        .list_accounts()
+        .into_iter()
+        .map(|account| AccountSummary {
+            username: account.username,
+            display_name: account.display_name,
+            role: account.role,
+            created_at: account.created_at,
+        })
+        .collect();
+    users.sort_by(|a, b| a.username.cmp(&b.username));
+
+    Ok(Json(AdminUsersResponse {
+        cloud_connected: state.bridge_connected.load(Ordering::SeqCst),
+        tenant_id: state.config_manager.get_config().tenant_id,
+        users,
+    }))
+}
+
+/// Resolves a user's workspace root, preferring the current layout over the legacy `users/` one.
+fn resolve_user_workspace_root(data_dir: &str, user: &str) -> Option<PathBuf> {
+    let data_root = Path::new(data_dir);
+    for candidate in [data_root.join(user), data_root.join("users").join(user)] {
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+async fn browse_user_files(
+    headers: HeaderMap,
+    Query(params): Query<BrowseQueryParams>,
+    State(state): State<AppState>,
+) -> Result<Json<BrowseResponse>, (StatusCode, Json<ApiResponse<()>>)> {
+    require_admin(&headers, &state).await?;
+
+    let config = state.config_manager.get_config();
+    let normalized_user = crate::auth::AccountManager::normalize_username(&params.user);
+    let Some(workspace_root) = resolve_user_workspace_root(&config.data_dir, &normalized_user) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse {
+                success: false,
+                message: format!("No workspace found for user '{}'", normalized_user),
+                data: None,
+            }),
+        ));
+    };
+
+    let relative_path = params.path.unwrap_or_default();
+    let requested_dir = normalize_path(&workspace_root.join(&relative_path));
+
+    let resolved_root = fs::canonicalize(&workspace_root).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Failed to resolve workspace root: {}", e),
+                data: None,
+            }),
+        )
+    })?;
+    let Some(resolved_target) = resolve_path_with_missing_tail(&requested_dir) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "Requested path could not be resolved".to_string(),
+                data: None,
+            }),
+        ));
+    };
+
+    if !is_path_within(&resolved_target, &resolved_root) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiResponse {
+                success: false,
+                message: "Requested path is outside of the user's workspace".to_string(),
+                data: None,
+            }),
+        ));
+    }
+
+    if !resolved_target.is_dir() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "Requested path is not a directory".to_string(),
+                data: None,
+            }),
+        ));
+    }
+
+    let read_dir = fs::read_dir(&resolved_target).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Failed to read directory: {}", e),
+                data: None,
+            }),
+        )
+    })?;
+
+    let mut entries = Vec::new();
+    for entry in read_dir.flatten() {
+        let entry_path = entry.path();
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        let entry_relative = entry_path
+            .strip_prefix(&resolved_root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| name.clone());
+        let modified_at = metadata
+            .modified()
+            .ok()
+            .map(chrono::DateTime::<chrono::Utc>::from)
+            .map(|dt| dt.to_rfc3339());
+
+        entries.push(BrowseEntry {
+            name,
+            is_dir: metadata.is_dir(),
+            size: metadata.len(),
+            modified_at,
+            relative_path: entry_relative,
+        });
+    }
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+
+    Ok(Json(BrowseResponse {
+        user: normalized_user,
+        relative_path,
+        entries,
+    }))
+}
+
+async fn serve_admin_ui() -> Html<&'static str> {
+    Html(include_str!("static/admin.html"))
 }
 
 #[cfg(test)]
