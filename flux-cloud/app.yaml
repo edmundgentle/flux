@@ -6,7 +6,7 @@ services:
       branch: main
       deploy_on_push: true
     source_dir: /flux-cloud
-    build_command: npm ci && npm run build
+    build_command: rm -rf node_modules && npm ci && npm run build
     run_command: npm start
     envs:
       - key: PORT
@@ -26,7 +26,7 @@ services:
       http_path: /health
 databases:
   - name: db
-    cluster_name: flux-db-prod
+    cluster_name: flux-db
     engine: PG
     production: true
     version: "16"
