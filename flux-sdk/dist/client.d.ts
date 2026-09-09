@@ -1,4 +1,4 @@
-import { FeatureConfig, SearchRequest, SearchResult, ConnectionState, FileUploadOptions, DownloadOptions, AuthCredentials, AuthSession } from './types.js';
+import { FeatureConfig, SearchRequest, SearchResult, ConnectionState, FileUploadOptions, DownloadOptions, AuthCredentials, AuthSession, TransportMode } from './types.js';
 export declare class FluxClient {
     private config;
     private socket;
@@ -9,10 +9,13 @@ export declare class FluxClient {
     private fetchImpl;
     private authSession;
     private reconnectEnabled;
+    private diagnostic;
     constructor(config: FeatureConfig);
     onStateChange(listener: (state: ConnectionState) => void): () => void;
     getState(): ConnectionState;
     getAuthSession(): AuthSession | null;
+    getTransportMode(): TransportMode;
+    private usesLanTransport;
     register(credentials: AuthCredentials): Promise<AuthSession>;
     login(credentials: AuthCredentials): Promise<AuthSession>;
     logout(): void;

@@ -25,6 +25,9 @@ export class FluxClient {
     fetchImpl;
     authSession = null;
     reconnectEnabled = true;
+    diagnostic(level, event, message) {
+        this.config.onDiagnostic?.({ timestamp: Date.now(), level, transport: this.getTransportMode(), event, message });
+    }
     constructor(config) {
         this.config = config;
         this.fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
@@ -37,6 +40,10 @@ export class FluxClient {
     }
     getState() { return this.state; }
     getAuthSession() { return this.authSession; }
+    getTransportMode() { return this.usesLanTransport() ? 'local' : 'relay'; }
+    usesLanTransport() {
+        return Boolean(this.config.localBaseUrl && this.config.localUseLan);
+    }
     async register(credentials) {
         return await this.authenticate('/api/auth/register', { email: credentials.username.trim(), password: credentials.password, label: credentials.displayName?.trim() || undefined }, 'register');
     }
@@ -69,6 +76,11 @@ export class FluxClient {
     }
     async connect() {
         this.reconnectEnabled = true;
+        if (this.usesLanTransport()) {
+            this.diagnostic('info', 'transport.local', 'Using local network HTTP; relay socket skipped');
+            this.setState('connected');
+            return;
+        }
         if (this.socket?.readyState === 1)
             return;
         const relayUrl = this.config.relayUrl?.trim();
@@ -80,22 +92,69 @@ export class FluxClient {
         if (!accessToken)
             throw new Error('Sign in before connecting to the relay');
         this.setState('connecting');
-        const ticketResponse = await this.fetchImpl(new URL('/api/auth/ws-ticket', relayUrl), {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${accessToken}`,
-                'x-tenant-id': this.config.tenantId,
-            },
-        });
+        let ticketResponse;
+        try {
+            ticketResponse = await this.fetchImpl(new URL('/api/auth/ws-ticket', relayUrl), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${accessToken}`,
+                    'x-tenant-id': this.config.tenantId,
+                },
+            });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : 'Cloud relay ticket request failed';
+            this.diagnostic('error', 'relay.ticket.error', `Could not reach cloud relay: ${message}`);
+            throw error;
+        }
         const ticketPayload = await ticketResponse.json();
         const ticket = ticketPayload.data?.ticket;
-        if (!ticketResponse.ok || !ticket)
-            throw new Error(ticketPayload.message || 'Unable to establish relay session');
+        if (!ticketResponse.ok || !ticket) {
+            const message = ticketPayload.message || `Relay ticket request failed (${ticketResponse.status})`;
+            this.diagnostic('error', 'relay.ticket.failed', message);
+            throw new Error(message);
+        }
+        this.diagnostic('info', 'relay.ticket.success', 'Cloud relay ticket received; opening WebSocket');
         const SocketCtor = this.config.websocketCtor ?? WebSocket;
         const socket = new SocketCtor(buildRelaySocketUrl(this.config.relayUrl, this.config.tenantId, ticket));
         this.socket = socket;
-        socket.onopen = () => { this.reconnectDelay = 1000; this.setState('connected'); };
+        let socketOpened = false;
+        const socketReady = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                this.diagnostic('error', 'relay.socket.timeout', 'Cloud relay WebSocket did not open within 10 seconds');
+                reject(new Error('Cloud relay WebSocket connection timed out'));
+            }, 10000);
+            socket.onopen = () => {
+                clearTimeout(timeout);
+                socketOpened = true;
+                this.reconnectDelay = 1000;
+                this.setState('connected');
+                this.diagnostic('info', 'relay.socket.open', 'Cloud relay WebSocket connected; Home Assistant tunnel is reachable through relay');
+                resolve();
+            };
+            socket.onerror = () => {
+                clearTimeout(timeout);
+                this.setState('reconnecting');
+                this.diagnostic('error', 'relay.socket.error', 'Cloud relay WebSocket reported an error');
+                if (!socketOpened)
+                    reject(new Error('Relay socket failed to connect'));
+            };
+            socket.onclose = () => {
+                clearTimeout(timeout);
+                this.socket = null;
+                this.diagnostic('warn', 'relay.socket.close', socketOpened ? 'Cloud relay WebSocket closed' : 'Cloud relay WebSocket closed before opening');
+                if (!socketOpened)
+                    reject(new Error('Relay socket closed before connecting'));
+                if (this.reconnectEnabled) {
+                    this.setState('reconnecting');
+                    void this.retryConnect();
+                }
+                else {
+                    this.setState('disconnected');
+                }
+            };
+        });
         socket.onmessage = (event) => {
             const parsed = safeJsonParse(typeof event.data === 'string' ? event.data : '');
             if (!parsed?.requestId)
@@ -109,17 +168,7 @@ export class FluxClient {
             else
                 pending.resolve(parsed.payload ?? {});
         };
-        socket.onerror = () => this.setState('reconnecting');
-        socket.onclose = () => {
-            this.socket = null;
-            if (this.reconnectEnabled) {
-                this.setState('reconnecting');
-                void this.retryConnect();
-            }
-            else {
-                this.setState('disconnected');
-            }
-        };
+        await socketReady;
     }
     async retryConnect() {
         if (!this.reconnectEnabled || this.state === 'connecting')
@@ -128,10 +177,12 @@ export class FluxClient {
         if (!this.reconnectEnabled)
             return;
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+        this.diagnostic('info', 'relay.reconnect.start', `Retrying cloud relay connection (next delay ${this.reconnectDelay}ms)`);
         try {
             await this.connect();
         }
         catch {
+            this.diagnostic('warn', 'relay.reconnect.failed', 'Cloud relay reconnect attempt failed; will retry');
             if (this.reconnectEnabled)
                 void this.retryConnect();
         }
@@ -147,16 +198,21 @@ export class FluxClient {
         await this.connect();
         if (!this.socket || this.socket.readyState !== 1)
             throw new Error('Relay socket is not connected');
+        this.diagnostic('info', 'relay.request.start', `${payload.method} ${payload.path} sent through cloud relay`);
         const requestId = uuid();
         const request = { type: 'proxy_request', tenantId: this.config.tenantId, requestId, payload, ts: Date.now() };
         return await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => { this.pending.delete(requestId); reject(new Error('Relay request timed out')); }, 30000);
+            const timeout = setTimeout(() => {
+                this.pending.delete(requestId);
+                this.diagnostic('error', 'relay.request.timeout', `${payload.method} ${payload.path} timed out; check whether the Home Assistant tunnel is connected to the relay`);
+                reject(new Error(`${this.getTransportMode() === 'local' ? 'Local network' : 'Cloud relay'} request timed out`));
+            }, 30000);
             this.pending.set(requestId, { resolve: (value) => { clearTimeout(timeout); resolve(value); }, reject: (error) => { clearTimeout(timeout); reject(error); } });
             this.socket.send(JSON.stringify(request));
         });
     }
     async httpRequest(path, method, body) {
-        const useLan = Boolean(this.config.localBaseUrl && this.config.localUseLan);
+        const useLan = this.usesLanTransport();
         const base = useLan ? this.config.localBaseUrl : this.config.relayUrl;
         const token = useLan ? this.config.localAccessToken : (this.authSession?.token || this.config.accessToken);
         const response = await this.fetchImpl(new URL(path, base), { method, headers: { 'Content-Type': 'application/json', ...(useLan ? {} : { 'x-tenant-id': this.config.tenantId }), Authorization: `Bearer ${token || ''}` }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -214,7 +270,7 @@ export class FluxClient {
         return (payload.body ?? payload.data ?? { path: uploadPath });
     }
     async downloadFile(path, options = {}) {
-        const useLan = Boolean(this.config.localBaseUrl && this.config.localUseLan);
+        const useLan = this.usesLanTransport();
         const base = useLan ? this.config.localBaseUrl : this.config.relayUrl;
         const token = useLan ? this.config.localAccessToken : (this.authSession?.token || this.config.accessToken);
         const url = new URL('/api/files/download', base);

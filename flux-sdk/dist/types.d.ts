@@ -1,5 +1,12 @@
 export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
 export type TransportMode = 'relay' | 'local';
+export type DiagnosticEvent = {
+    timestamp: number;
+    level: 'info' | 'warn' | 'error';
+    transport: TransportMode;
+    event: string;
+    message: string;
+};
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export type RequestEnvelope<T = unknown> = {
     type: 'proxy_request';
@@ -76,6 +83,7 @@ export type FeatureConfig = {
     localUseLan?: boolean;
     websocketCtor?: new (url: string, protocols?: string | string[]) => WebSocketLike;
     fetchImpl?: typeof fetch;
+    onDiagnostic?: (event: DiagnosticEvent) => void;
     autoConnect?: boolean;
 };
 export type AuthCredentials = {
