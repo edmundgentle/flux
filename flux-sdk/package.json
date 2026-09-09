@@ -1,7 +1,7 @@
 {
   "name": "@flux-sdk/core",
   "version": "0.1.0",
-  "description": "Flux mobile SDK for multi-tenant personal search and file management",
+  "description": "Flux mobile SDK for multi-instance personal search and file management",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

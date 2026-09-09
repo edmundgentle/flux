@@ -3,27 +3,28 @@ import assert from 'node:assert/strict';
 import { TunnelRegistry, parseProxyRequest, makeProxyResponse } from './relay';
 import { hashPassword, verifyPassword, generateToken, hashToken, verifyTokenHash } from './security';
 
-test('tenant registry stores active tunnels by tenant id', () => {
+test('instance registry stores active tunnels by instance id', () => {
   const registry = new TunnelRegistry();
   const socket = {} as any;
 
-  registry.register('tenant-a', socket, 'tunnel-token');
-  const tunnel = registry.get('tenant-a');
+  registry.register('instance-a', socket, 'tunnel-token');
+  const tunnel = registry.get('instance-a');
 
   assert.ok(tunnel);
-  assert.equal(tunnel?.tenantId, 'tenant-a');
+  assert.equal(tunnel?.instanceId, 'instance-a');
   assert.equal(registry.list().length, 1);
 });
 
-test('tenant registry rejects silent takeover of an active tenant tunnel', () => {
+test('instance registry replaces a stale tunnel on reconnect instead of rejecting it', () => {
   const registry = new TunnelRegistry();
-  const first = {} as any;
+  const first = { removeAllListeners: () => {}, terminate: () => {} } as any;
   const second = {} as any;
 
-  registry.register('tenant-a', first, 'tunnel-token');
+  registry.register('instance-a', first, 'tunnel-token');
+  registry.register('instance-a', second, 'tunnel-token');
 
-  assert.throws(() => registry.register('tenant-a', second, 'tunnel-token'), /already connected/i);
-  assert.equal(registry.get('tenant-a')?.socket, first);
+  assert.equal(registry.get('instance-a')?.socket, second);
+  assert.equal(registry.list().length, 1);
 });
 
 test('password hashing verifies correct passwords and rejects wrong ones', () => {
@@ -32,7 +33,7 @@ test('password hashing verifies correct passwords and rejects wrong ones', () =>
   assert.equal(verifyPassword('wrong-password', stored), false);
 });
 
-test('tenant tokens are verified against their stored hash', () => {
+test('instance tokens are verified against their stored hash', () => {
   const token = generateToken();
   const stored = hashToken(token);
   assert.equal(verifyTokenHash(token, stored), true);
@@ -50,10 +51,10 @@ test('canonical proxy request payloads round-trip through relay envelopes', () =
   const parsed = parseProxyRequest(payload);
   assert.deepEqual(parsed, payload);
 
-  const envelope = makeProxyResponse({ status: 200, body: { ok: true } }, 'req-123', 'tenant-a');
+  const envelope = makeProxyResponse({ status: 200, body: { ok: true } }, 'req-123', 'instance-a');
   assert.equal(envelope.type, 'proxy_response');
   assert.equal(envelope.requestId, 'req-123');
-  assert.equal(envelope.tenantId, 'tenant-a');
+  assert.equal(envelope.instanceId, 'instance-a');
   assert.equal((envelope.payload as any).status, 200);
 });
 

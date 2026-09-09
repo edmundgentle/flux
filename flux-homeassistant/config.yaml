@@ -1,5 +1,5 @@
 name: Flux
-version: "1.0.6"
+version: "1.0.8"
 slug: flux
 description: Local personal search, file management, and vision analysis server.
 arch:
@@ -18,16 +18,18 @@ options:
   scan_dirs:
     - /share
     - /media
-  tenant_id: ""
+  instance_id: ""
   websocket_url: ""
   websocket_token: ""
+  cloud_url: "https://flux-relay-fvnyy.ondigitalocean.app"
 schema:
   data_dir: str
   scan_dirs:
     - str
-  tenant_id: str?
+  instance_id: str?
   websocket_url: str?
   websocket_token: password?
+  cloud_url: str?
 privileged:
   - SYS_ADMIN
 devices:

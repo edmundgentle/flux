@@ -34,6 +34,6 @@ export function verifyTokenHash(token: string, storedHash: string): boolean {
   return crypto.timingSafeEqual(candidate, stored);
 }
 
-export function generateTenantId(): string {
-  return `tenant_${crypto.randomBytes(8).toString('hex')}`;
+export function generateInstanceId(): string {
+  return `instance_${crypto.randomBytes(8).toString('hex')}`;
 }

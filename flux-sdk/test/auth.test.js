@@ -12,14 +12,14 @@ test('register stores an auth session for later requests', async () => {
   const calls = [];
   const client = new FluxClient({
     relayUrl: 'http://relay.test',
-    tenantId: 'tenant-a',
-    tenantToken: 'tenant-token',
+    instanceId: 'instance-a',
+    instanceToken: 'instance-token',
     autoConnect: false,
     fetchImpl: async (input, init) => {
       const url = String(input);
       calls.push({ url, method: init?.method ?? 'GET', headers: init?.headers });
       if (url.endsWith('/api/auth/register')) {
-        return createJsonResponse({ success: true, message: 'ok', data: { user: 'alice', token: 'abc123', tenantId: 'tenant-a' } });
+        return createJsonResponse({ success: true, message: 'ok', data: { user: 'alice', token: 'abc123', instanceId: 'instance-a' } });
       }
       throw new Error(`Unexpected request: ${url}`);
     },
@@ -37,13 +37,13 @@ test('register stores an auth session for later requests', async () => {
 test('login stores the returned auth token', async () => {
   const client = new FluxClient({
     relayUrl: 'http://relay.test',
-    tenantId: 'tenant-a',
-    tenantToken: 'tenant-token',
+    instanceId: 'instance-a',
+    instanceToken: 'instance-token',
     autoConnect: false,
     fetchImpl: async (input) => {
       const url = String(input);
       if (url.endsWith('/api/auth/login')) {
-        return createJsonResponse({ success: true, message: 'ok', data: { user: 'bob', token: 'def456', tenantId: 'tenant-a' } });
+        return createJsonResponse({ success: true, message: 'ok', data: { user: 'bob', token: 'def456', instanceId: 'instance-a' } });
       }
       throw new Error(`Unexpected request: ${url}`);
     },
@@ -58,7 +58,7 @@ test('login stores the returned auth token', async () => {
 test('download decodes the relay file envelope into a Blob', async () => {
   const client = new FluxClient({
     relayUrl: 'https://relay.test',
-    tenantId: 'tenant-a',
+    instanceId: 'instance-a',
     accessToken: 'access-token',
     autoConnect: false,
     fetchImpl: async () => createJsonResponse({
@@ -74,13 +74,13 @@ test('download decodes the relay file envelope into a Blob', async () => {
   assert.equal(await file.text(), 'hello');
 });
 
-test('connect rejects an unconfigured relay URL and tenant', async () => {
+test('connect rejects an unconfigured relay URL and instance', async () => {
   const client = new FluxClient({
     relayUrl: '',
-    tenantId: '',
+    instanceId: '',
     autoConnect: false,
     fetchImpl: async () => createJsonResponse({ ok: true }),
   });
 
-  await assert.rejects(() => client.connect(), /Relay URL and tenant ID are required/i);
+  await assert.rejects(() => client.connect(), /Relay URL and instance ID are required/i);
 });

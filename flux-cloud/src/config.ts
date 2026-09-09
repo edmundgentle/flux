@@ -28,7 +28,7 @@ export function loadConfig(): AppConfig {
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
-    throw new Error('DATABASE_URL environment variable is required to store tenants and users');
+    throw new Error('DATABASE_URL environment variable is required to store instances and users');
   }
 
   const port = Number(process.env.PORT || 3000);

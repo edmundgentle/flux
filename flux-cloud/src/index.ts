@@ -5,14 +5,14 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { loadConfig } from './config';
 import { TunnelRegistry, sendEnvelope, isJsonEnvelope, parseProxyRequest, makeProxyResponse } from './relay';
 import { ProxyRequest, RelayEnvelope, ProxyResponse } from './types';
-import { TenantStore } from './tenants';
+import { UserStore } from './users';
 
 const config = loadConfig();
 const registry = new TunnelRegistry();
-const tenantStore = new TenantStore(config.databaseUrl);
+const userStore = new UserStore(config.databaseUrl);
 const app = express();
 app.set('trust proxy', process.env.TRUST_PROXY === 'true');
-const wsTickets = new Map<string, { tenantId: string; user: string; expiresAt: number }>();
+const wsTickets = new Map<string, { instanceId: string; user: string; expiresAt: number }>();
 const rateLimitBuckets = new Map<string, { startedAt: number; count: number }>();
 
 function rateLimit(windowMs: number, maxRequests: number): express.RequestHandler {
@@ -35,6 +35,7 @@ function rateLimit(windowMs: number, maxRequests: number): express.RequestHandle
 }
 
 const authRateLimit = rateLimit(60_000, 10);
+const provisionRateLimit = rateLimit(60_000, 5);
 const rateLimitCleanup = setInterval(() => {
   const cutoff = Date.now() - 60_000;
   for (const [key, bucket] of rateLimitBuckets) {
@@ -49,9 +50,9 @@ function messageText(message: unknown): string {
   return '';
 }
 
-function signRelayUser(tunnelToken: string, tenantId: string, requestId: string, user: string): string {
+function signRelayUser(tunnelToken: string, instanceId: string, requestId: string, user: string): string {
   return crypto.createHmac('sha256', tunnelToken)
-    .update(`${tenantId}\n${requestId}\n${user}`)
+    .update(`${instanceId}\n${requestId}\n${user}`)
     .digest('hex');
 }
 
@@ -60,7 +61,7 @@ app.use((req, res, next) => {
   if (origin && (config.corsOrigins.includes('*') || config.corsOrigins.includes(origin))) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Tenant-Id');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Instance-Id');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   }
   if (req.method === 'OPTIONS') {
@@ -73,22 +74,22 @@ app.use(express.json({ limit: '12mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 const requireAccessToken = async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
-  const tenantId = typeof req.query.tenant_id === 'string' ? req.query.tenant_id : req.header('x-tenant-id');
+  const instanceId = typeof req.query.instance_id === 'string' ? req.query.instance_id : req.header('x-instance-id');
   const authorization = req.header('authorization');
   const token = authorization?.replace(/^Bearer\s+/i, '');
-  const user = tenantId && token ? await tenantStore.getAccessTokenUser(tenantId, token) : undefined;
-  if (!tenantId || !user) {
+  const user = instanceId && token ? await userStore.getAccessTokenUser(instanceId, token) : undefined;
+  if (!instanceId || !user) {
     res.status(401).json({ success: false, message: 'Missing or invalid access token' });
     return;
   }
-  res.locals.tenantId = tenantId;
+  res.locals.instanceId = instanceId;
   res.locals.user = user;
   next();
 };
 
 app.post('/api/auth/ws-ticket', authRateLimit, requireAccessToken, (req, res) => {
   const ticket = crypto.randomBytes(32).toString('hex');
-  wsTickets.set(ticket, { tenantId: res.locals.tenantId, user: res.locals.user, expiresAt: Date.now() + 60_000 });
+  wsTickets.set(ticket, { instanceId: res.locals.instanceId, user: res.locals.user, expiresAt: Date.now() + 60_000 });
   res.json({ success: true, data: { ticket } });
 });
 
@@ -104,19 +105,19 @@ const tunnelHeartbeat = setInterval(() => {
   const now = Date.now();
   for (const tunnel of registry.list()) {
     if (now - tunnel.lastSeen > 90_000 || tunnel.socket.readyState !== WebSocket.OPEN) {
-      registry.unregister(tunnel.tenantId);
+      registry.unregister(tunnel.instanceId);
       tunnel.socket.terminate();
       continue;
     }
-    sendEnvelope(tunnel.socket, { type: 'ping', tenantId: tunnel.tenantId, ts: now });
+    sendEnvelope(tunnel.socket, { type: 'ping', instanceId: tunnel.instanceId, ts: now });
   }
 }, 30_000);
 tunnelHeartbeat.unref();
 
-function consumeWsTicket(tenantId: string, ticket: string): string | undefined {
+function consumeWsTicket(instanceId: string, ticket: string): string | undefined {
   const entry = wsTickets.get(ticket);
   wsTickets.delete(ticket);
-  if (!entry || entry.tenantId !== tenantId || entry.expiresAt <= Date.now()) return undefined;
+  if (!entry || entry.instanceId !== instanceId || entry.expiresAt <= Date.now()) return undefined;
   return entry.user;
 }
 
@@ -126,11 +127,11 @@ function assertConfiguredRelayRuntime(): void {
   }
 }
 
-async function proxyToTenant(req: express.Request, res: express.Response): Promise<void> {
-  const tenantId = String(res.locals.tenantId || req.query.tenant_id || req.header('x-tenant-id') || '');
-  const tunnel = registry.get(tenantId);
+async function proxyToInstance(req: express.Request, res: express.Response): Promise<void> {
+  const instanceId = String(res.locals.instanceId || req.query.instance_id || req.header('x-instance-id') || '');
+  const tunnel = registry.get(instanceId);
   if (!tunnel) {
-    res.status(503).json({ success: false, message: 'No active tunnel for tenant' });
+    res.status(503).json({ success: false, message: 'No active tunnel for instance' });
     return;
   }
 
@@ -160,12 +161,12 @@ async function proxyToTenant(req: express.Request, res: express.Response): Promi
     query: safeQuery,
     body: req.body,
     user: res.locals.user,
-    userSignature: signRelayUser(tunnel.tunnelToken, tenantId, requestId, res.locals.user),
+    userSignature: signRelayUser(tunnel.tunnelToken, instanceId, requestId, res.locals.user),
   };
 
   const envelope: RelayEnvelope<ProxyRequest> = {
     type: 'proxy_request',
-    tenantId,
+    instanceId,
     requestId,
     payload: proxyRequest,
     ts: Date.now(),
@@ -222,10 +223,28 @@ async function proxyToTenant(req: express.Request, res: express.Response): Promi
 
 app.get('/health', async (_req, res) => {
   try {
-    await tenantStore.ready();
+    await userStore.ready();
     res.json({ ok: true });
   } catch {
     res.status(503).json({ ok: false });
+  }
+});
+
+app.post('/api/instances/provision', provisionRateLimit, async (req, res) => {
+  const { label } = req.body ?? {};
+  try {
+    const instance = await userStore.provisionInstance(typeof label === 'string' ? label : undefined);
+    res.status(201).json({
+      success: true,
+      data: {
+        instanceId: instance.instanceId,
+        tunnelToken: instance.tunnelToken,
+        label: instance.label,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Provisioning failed';
+    res.status(400).json({ success: false, message });
   }
 });
 
@@ -237,15 +256,15 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
   }
 
   try {
-    const tenant = await tenantStore.registerUser(email, password, typeof label === 'string' ? label : undefined);
+    const instance = await userStore.registerUser(email, password, typeof label === 'string' ? label : undefined);
     res.status(201).json({
       success: true,
       data: {
         user: email.trim().toLowerCase(),
-        token: tenant.accessToken,
-        tenantId: tenant.tenantId,
-        tunnelToken: tenant.tunnelToken,
-        label: tenant.label,
+        token: instance.accessToken,
+        instanceId: instance.instanceId,
+        tunnelToken: instance.tunnelToken,
+        label: instance.label,
       },
     });
   } catch (error) {
@@ -255,31 +274,31 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
 });
 
 app.post('/api/auth/login', authRateLimit, async (req, res) => {
-  const { email, password, tenant_id: requestedTenantId } = req.body ?? {};
+  const { email, password, instance_id: requestedInstanceId } = req.body ?? {};
   if (typeof email !== 'string' || typeof password !== 'string') {
     res.status(400).json({ success: false, message: 'email and password are required' });
     return;
   }
 
   try {
-    const tenants = await tenantStore.login(email, password);
-    const tenant = typeof requestedTenantId === 'string'
-      ? tenants.find((candidate) => candidate.tenantId === requestedTenantId)
-      : tenants[0];
-    if (requestedTenantId && !tenant) {
-      res.status(404).json({ success: false, message: 'Tenant not found for this account' });
+    const instances = await userStore.login(email, password);
+    const instance = typeof requestedInstanceId === 'string'
+      ? instances.find((candidate) => candidate.instanceId === requestedInstanceId)
+      : instances[0];
+    if (requestedInstanceId && !instance) {
+      res.status(404).json({ success: false, message: 'Instance not found for this account' });
       return;
     }
     res.json({
       success: true,
       data: {
         user: email.trim().toLowerCase(),
-        ...(tenant ? {
-          token: tenant.accessToken,
-          tenantId: tenant.tenantId,
-          label: tenant.label,
+        ...(instance ? {
+          token: instance.accessToken,
+          instanceId: instance.instanceId,
+          label: instance.label,
         } : {}),
-        tenants: tenants.map(({ tenantId, label }) => ({ tenantId, label })),
+        instances: instances.map(({ instanceId, label }) => ({ instanceId, label })),
       },
     });
   } catch {
@@ -287,20 +306,20 @@ app.post('/api/auth/login', authRateLimit, async (req, res) => {
   }
 });
 
-app.get('/api/search', requireAccessToken, proxyToTenant);
-app.post('/api/search', requireAccessToken, proxyToTenant);
-app.get('/api/files/:path(*)', requireAccessToken, proxyToTenant);
-app.post('/api/files/:path(*)', requireAccessToken, proxyToTenant);
-app.delete('/api/files/:path(*)', requireAccessToken, proxyToTenant);
-app.put('/api/files/:path(*)', requireAccessToken, proxyToTenant);
-app.patch('/api/files/:path(*)', requireAccessToken, proxyToTenant);
-app.get('/api/config', requireAccessToken, proxyToTenant);
-app.post('/api/config', requireAccessToken, proxyToTenant);
-app.get('/api/storage', requireAccessToken, proxyToTenant);
-app.get('/api/shares', requireAccessToken, proxyToTenant);
-app.post('/api/shares/share', requireAccessToken, proxyToTenant);
-app.post('/api/shares/unshare', requireAccessToken, proxyToTenant);
-app.get('/api/shares/list', requireAccessToken, proxyToTenant);
+app.get('/api/search', requireAccessToken, proxyToInstance);
+app.post('/api/search', requireAccessToken, proxyToInstance);
+app.get('/api/files/:path(*)', requireAccessToken, proxyToInstance);
+app.post('/api/files/:path(*)', requireAccessToken, proxyToInstance);
+app.delete('/api/files/:path(*)', requireAccessToken, proxyToInstance);
+app.put('/api/files/:path(*)', requireAccessToken, proxyToInstance);
+app.patch('/api/files/:path(*)', requireAccessToken, proxyToInstance);
+app.get('/api/config', requireAccessToken, proxyToInstance);
+app.post('/api/config', requireAccessToken, proxyToInstance);
+app.get('/api/storage', requireAccessToken, proxyToInstance);
+app.get('/api/shares', requireAccessToken, proxyToInstance);
+app.post('/api/shares/share', requireAccessToken, proxyToInstance);
+app.post('/api/shares/unshare', requireAccessToken, proxyToInstance);
+app.get('/api/shares/list', requireAccessToken, proxyToInstance);
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: config.wsPath });
@@ -314,43 +333,43 @@ const shutdown = async () => {
   clearInterval(tunnelHeartbeat);
   for (const client of wss.clients) client.close(1001, 'Server shutting down');
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  await tenantStore.close();
+  await userStore.close();
 };
 process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
 
 
 wss.on('connection', async (socket, request) => {
-  const authHeader = request.headers.authorization || request.headers['x-tenant-token'];
+  const authHeader = request.headers.authorization || request.headers['x-instance-token'];
   const url = new URL(request.url || '/', 'http://localhost');
-  const tenantId = url.searchParams.get('tenant_id') || request.headers['x-tenant-id'] as string | undefined;
-  const tunnelToken = url.searchParams.get('tenant_token') || (typeof request.headers['x-tenant-token'] === 'string' ? request.headers['x-tenant-token'] : undefined);
+  const instanceId = url.searchParams.get('instance_id') || request.headers['x-instance-id'] as string | undefined;
+  const tunnelToken = url.searchParams.get('instance_token') || (typeof request.headers['x-instance-token'] === 'string' ? request.headers['x-instance-token'] : undefined);
   const accessToken = typeof authHeader === 'string' ? authHeader.replace(/^Bearer\s+/i, '') : undefined;
   const wsTicket = url.searchParams.get('ws_ticket');
 
-  if (!tenantId || (!tunnelToken && !accessToken)) {
+  if (!instanceId || (!tunnelToken && !accessToken && !wsTicket)) {
     socket.close(1008, 'Unauthorized');
     return;
   }
 
-  const isTunnel = Boolean(tunnelToken && await tenantStore.verifyToken(tenantId, tunnelToken));
-  const clientUser = (wsTicket && consumeWsTicket(tenantId, wsTicket))
-    || (accessToken ? await tenantStore.getAccessTokenUser(tenantId, accessToken) : undefined);
+  const isTunnel = Boolean(tunnelToken && await userStore.verifyToken(instanceId, tunnelToken));
+  const clientUser = (wsTicket && consumeWsTicket(instanceId, wsTicket))
+    || (accessToken ? await userStore.getAccessTokenUser(instanceId, accessToken) : undefined);
   const isClient = Boolean(clientUser);
   if (!isTunnel && !isClient) {
-    socket.close(1008, 'Invalid tenant credentials');
+    socket.close(1008, 'Invalid instance credentials');
     return;
   }
 
   try {
     if (isTunnel) {
-      registry.register(tenantId, socket, tunnelToken!);
-      sendEnvelope(socket, { type: 'hello', tenantId, ts: Date.now() });
+      registry.register(instanceId, socket, tunnelToken!);
+      sendEnvelope(socket, { type: 'hello', instanceId, ts: Date.now() });
     }
 
     socket.on('message', (raw) => {
       try {
-        if (isTunnel) registry.touch(tenantId, socket);
+        if (isTunnel) registry.touch(instanceId, socket);
         const message = raw.toString();
         const parsed = JSON.parse(message) as RelayEnvelope;
         if (!isJsonEnvelope(parsed)) return;
@@ -361,25 +380,25 @@ wss.on('connection', async (socket, request) => {
         if (parsed.type === 'proxy_request') {
           const proxyRequest = parseProxyRequest(parsed.payload);
           if (!proxyRequest) {
-            sendEnvelope(socket, { type: 'error', requestId: parsed.requestId, tenantId, error: 'Malformed proxy request', ts: Date.now() });
+            sendEnvelope(socket, { type: 'error', requestId: parsed.requestId, instanceId, error: 'Malformed proxy request', ts: Date.now() });
             return;
           }
 
-          const tunnel = registry.get(tenantId);
+          const tunnel = registry.get(instanceId);
           if (!tunnel || tunnel.socket === socket) {
-            sendEnvelope(socket, { type: 'error', requestId: parsed.requestId, tenantId, error: 'No active tunnel for tenant', ts: Date.now() });
+            sendEnvelope(socket, { type: 'error', requestId: parsed.requestId, instanceId, error: 'No active tunnel for instance', ts: Date.now() });
             return;
           }
 
           const requestId = parsed.requestId || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
           const relayRequest: RelayEnvelope<ProxyRequest> = {
             type: 'proxy_request',
-            tenantId,
+            instanceId,
             requestId,
               payload: {
                 ...proxyRequest,
                 user: clientUser,
-                userSignature: signRelayUser(tunnel.tunnelToken, tenantId, requestId, clientUser!),
+                userSignature: signRelayUser(tunnel.tunnelToken, instanceId, requestId, clientUser!),
               },
             ts: Date.now(),
           };
@@ -409,25 +428,25 @@ wss.on('connection', async (socket, request) => {
 
           setTimeout(() => {
             tunnel.socket.off('message', responseListener);
-            sendEnvelope(socket, { type: 'error', requestId, tenantId, error: 'Proxy request timeout', ts: Date.now() });
+            sendEnvelope(socket, { type: 'error', requestId, instanceId, error: 'Proxy request timeout', ts: Date.now() });
           }, 30000);
         }
       } catch (error) {
-        sendEnvelope(socket, { type: 'error', tenantId, error: error instanceof Error ? error.message : 'Unknown error', ts: Date.now() });
+        sendEnvelope(socket, { type: 'error', instanceId, error: error instanceof Error ? error.message : 'Unknown error', ts: Date.now() });
       }
     });
 
     socket.on('close', (code, reason) => {
-      console.warn(`Tenant ${tenantId} WebSocket closed ${isTunnel ? 'tunnel' : 'client'} code=${code} reason=${reason.toString() || 'none'}`);
-      if (isTunnel) registry.unregister(tenantId);
+      console.warn(`Instance ${instanceId} WebSocket closed ${isTunnel ? 'tunnel' : 'client'} code=${code} reason=${reason.toString() || 'none'}`);
+      if (isTunnel) registry.unregister(instanceId);
     });
 
     socket.on('error', (error) => {
-      console.error(`Tenant ${tenantId} WebSocket error ${isTunnel ? 'tunnel' : 'client'}`, error);
-      if (isTunnel) registry.unregister(tenantId);
+      console.error(`Instance ${instanceId} WebSocket error ${isTunnel ? 'tunnel' : 'client'}`, error);
+      if (isTunnel) registry.unregister(instanceId);
     });
 
-    console.log(`Tenant ${tenantId} connected via WebSocket ${isTunnel ? 'tunnel' : 'client'}`);
+    console.log(`Instance ${instanceId} connected via WebSocket ${isTunnel ? 'tunnel' : 'client'}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown connection error';
     socket.close(1008, message);
@@ -437,14 +456,14 @@ wss.on('connection', async (socket, request) => {
 
 try {
   assertConfiguredRelayRuntime();
-  tenantStore.init()
+  userStore.init()
     .then(() => {
       server.listen(config.port, config.host, () => {
         console.log(`Flux Cloud Relay listening on http://${config.host}:${config.port}${config.wsPath}`);
       });
     })
     .catch((error) => {
-      console.error('Failed to initialize tenant store', error);
+      console.error('Failed to initialize instance store', error);
       process.exit(1);
     });
 } catch (error) {

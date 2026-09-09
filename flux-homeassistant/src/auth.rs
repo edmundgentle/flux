@@ -14,7 +14,6 @@ pub struct Account {
     pub display_name: Option<String>,
     pub password_hash: String,
     pub role: String,
-    pub tenant_id: String,
     pub created_at: String,
 }
 
@@ -216,7 +215,6 @@ impl AccountManager {
             display_name: display_name.filter(|value| !value.trim().is_empty()),
             password_hash,
             role: role.clone(),
-            tenant_id: normalized.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
@@ -309,15 +307,6 @@ impl AccountManager {
             .get(&normalized)
             .map(|account| account.role == "admin")
             .unwrap_or(false)
-    }
-
-    pub fn default_tenant_id(&self) -> Option<String> {
-        let accounts_guard = self.accounts.read().unwrap();
-        accounts_guard
-            .values()
-            .find(|account| account.role == "admin")
-            .or_else(|| accounts_guard.values().next())
-            .map(|account| account.tenant_id.clone())
     }
 
     #[allow(dead_code)]

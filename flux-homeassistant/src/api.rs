@@ -105,12 +105,13 @@ pub struct AccountSummary {
     pub display_name: Option<String>,
     pub role: String,
     pub created_at: String,
+    pub storage_bytes: u64,
 }
 
 #[derive(Serialize)]
 pub struct AdminUsersResponse {
     pub cloud_connected: bool,
-    pub tenant_id: Option<String>,
+    pub instance_id: Option<String>,
     pub users: Vec<AccountSummary>,
 }
 
@@ -901,24 +902,49 @@ async fn list_admin_users(
 ) -> Result<Json<AdminUsersResponse>, (StatusCode, Json<ApiResponse<()>>)> {
     require_admin(&headers, &state).await?;
 
+    let config = state.config_manager.get_config();
     let mut users: Vec<AccountSummary> = state
         .account_manager
         .list_accounts()
         .into_iter()
-        .map(|account| AccountSummary {
-            username: account.username,
-            display_name: account.display_name,
-            role: account.role,
-            created_at: account.created_at,
+        .map(|account| {
+            let normalized_user = crate::auth::AccountManager::normalize_username(&account.username);
+            let storage_bytes = resolve_user_workspace_root(&config.data_dir, &normalized_user)
+                .map(|root| dir_size(&root))
+                .unwrap_or(0);
+            AccountSummary {
+                username: account.username,
+                display_name: account.display_name,
+                role: account.role,
+                created_at: account.created_at,
+                storage_bytes,
+            }
         })
         .collect();
     users.sort_by(|a, b| a.username.cmp(&b.username));
 
     Ok(Json(AdminUsersResponse {
         cloud_connected: state.bridge_connected.load(Ordering::SeqCst),
-        tenant_id: state.config_manager.get_config().tenant_id,
+        instance_id: config.instance_id,
         users,
     }))
+}
+
+/// Recursively sums the size of all files under `path`, skipping entries it cannot read.
+fn dir_size(path: &Path) -> u64 {
+    let Ok(read_dir) = fs::read_dir(path) else { return 0 };
+    let mut total = 0u64;
+    for entry in read_dir.flatten() {
+        let entry_path = entry.path();
+        if let Ok(metadata) = entry.metadata() {
+            if metadata.is_dir() {
+                total += dir_size(&entry_path);
+            } else {
+                total += metadata.len();
+            }
+        }
+    }
+    total
 }
 
 /// Resolves a user's workspace root, preferring the current layout over the legacy `users/` one.

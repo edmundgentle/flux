@@ -1,6 +1,6 @@
 import type { WebSocket } from 'ws';
 
-export type TenantId = string;
+export type InstanceId = string;
 
 export type RelayMessageType =
   | 'hello'
@@ -12,7 +12,7 @@ export type RelayMessageType =
 
 export type RelayEnvelope<T = unknown> = {
   type: RelayMessageType;
-  tenantId?: TenantId;
+  instanceId?: InstanceId;
   requestId?: string;
   payload?: T;
   error?: string;
@@ -37,8 +37,8 @@ export type ProxyResponse = {
   text?: string;
 };
 
-export type TenantTunnel = {
-  tenantId: TenantId;
+export type InstanceTunnel = {
+  instanceId: InstanceId;
   socket: WebSocket;
   tunnelToken: string;
   connectedAt: number;

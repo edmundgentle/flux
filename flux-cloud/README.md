@@ -1,13 +1,13 @@
 # Flux Cloud Relay
 
-This project provides the multi-tenant relay layer for Flux. It exposes a secured public API and maintains persistent WebSocket tunnels keyed by tenant.
+This project provides the multi-instance relay layer for Flux. It exposes a secured public API and maintains persistent WebSocket tunnels keyed by instance.
 
 ## Features
 
 - scoped bearer-token REST endpoints
 - self-service registration and login backed by PostgreSQL
-- tenant-aware token validation
-- active tunnel registry keyed by tenant_id
+- instance-aware token validation
+- active tunnel registry keyed by instance_id
 - outbound relay socket registration from local HA boxes
 - proxy request/response envelopes for remote request forwarding
 
@@ -21,9 +21,9 @@ npm install
 npm run dev
 ```
 
-## Registering a tenant
+## Registering a user
 
-New users register themselves. Registration creates a user account, a tenant, a one-time Home Assistant tunnel token, and a scoped app access token:
+New users register themselves. Registration creates a user account, an instance, a one-time Home Assistant tunnel token, and a scoped app access token:
 
 ```bash
 curl -X POST "http://localhost:3000/api/auth/register" \
@@ -31,25 +31,25 @@ curl -X POST "http://localhost:3000/api/auth/register" \
   -d '{"email":"me@example.com","password":"a-strong-password","label":"Primary Home"}'
 ```
 
-Existing users can log in. The response includes every tenant label and ID; pass
-`tenant_id` in the login body to select a specific tenant:
+Existing users can log in. The response includes every instance label and ID; pass
+`instance_id` in the login body to select a specific instance:
 
 ```bash
 curl -X POST "http://localhost:3000/api/auth/login" \
   -H "Content-Type: application/json" \
-  -d '{"email":"me@example.com","password":"a-strong-password","tenant_id":"TENANT_ID"}'
+  -d '{"email":"me@example.com","password":"a-strong-password","instance_id":"INSTANCE_ID"}'
 ```
 
 ## Public API example
 
 ```bash
-curl "http://localhost:3000/api/search?tenant_id=TENANT_ID&q=*" \
+curl "http://localhost:3000/api/search?instance_id=INSTANCE_ID&q=*" \
   -H "Authorization: Bearer APP_ACCESS_TOKEN"
 ```
 
 The WebSocket endpoint is exposed on `/ws` and expects:
 
-- Home Assistant tunnels use `X-Tenant-Id` and `X-Tenant-Token` headers.
-- Mobile clients use `tenant_id` plus an `Authorization: Bearer APP_ACCESS_TOKEN` header.
-- Mobile clients first call `POST /api/auth/ws-ticket` with the bearer access token and `x-tenant-id` header.
-- Mobile WebSockets use `tenant_id` and the short-lived `ws_ticket` query parameter because browser WebSockets cannot set headers.
+- Home Assistant tunnels use `X-Instance-Id` and `X-Instance-Token` headers.
+- Mobile clients use `instance_id` plus an `Authorization: Bearer APP_ACCESS_TOKEN` header.
+- Mobile clients first call `POST /api/auth/ws-ticket` with the bearer access token and `x-instance-id` header.
+- Mobile WebSockets use `instance_id` and the short-lived `ws_ticket` query parameter because browser WebSockets cannot set headers.

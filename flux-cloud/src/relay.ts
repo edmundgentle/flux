@@ -1,45 +1,48 @@
 import { WebSocket } from 'ws';
-import { RelayEnvelope, ProxyRequest, ProxyResponse, TenantId, TenantTunnel } from './types';
+import { RelayEnvelope, ProxyRequest, ProxyResponse, InstanceId, InstanceTunnel } from './types';
 
 export class TunnelRegistry {
-  private tenants = new Map<TenantId, TenantTunnel>();
+  private instances = new Map<InstanceId, InstanceTunnel>();
 
-  register(tenantId: TenantId, socket: WebSocket, tunnelToken: string): TenantTunnel {
-    const existing = this.tenants.get(tenantId);
-    if (existing) {
-      throw new Error(`Tenant ${tenantId} is already connected`);
+  register(instanceId: InstanceId, socket: WebSocket, tunnelToken: string): InstanceTunnel {
+    const existing = this.instances.get(instanceId);
+    if (existing && existing.socket !== socket) {
+      // Replace stale tunnels instead of rejecting reconnects: the HA bridge reconnects
+      // aggressively on any network blip, and the old socket may not have been closed yet.
+      existing.socket.removeAllListeners();
+      existing.socket.terminate();
     }
 
     const tunnel = {
-      tenantId,
+      instanceId,
       socket,
       tunnelToken,
       connectedAt: Date.now(),
       lastSeen: Date.now(),
     };
-    this.tenants.set(tenantId, tunnel);
+    this.instances.set(instanceId, tunnel);
     return tunnel;
   }
 
-  unregister(tenantId: TenantId): void {
-    this.tenants.delete(tenantId);
+  unregister(instanceId: InstanceId): void {
+    this.instances.delete(instanceId);
   }
 
-  touch(tenantId: TenantId, socket: WebSocket): void {
-    const tunnel = this.tenants.get(tenantId);
+  touch(instanceId: InstanceId, socket: WebSocket): void {
+    const tunnel = this.instances.get(instanceId);
     if (tunnel?.socket === socket) tunnel.lastSeen = Date.now();
   }
 
-  get(tenantId: TenantId): TenantTunnel | undefined {
-    const tunnel = this.tenants.get(tenantId);
+  get(instanceId: InstanceId): InstanceTunnel | undefined {
+    const tunnel = this.instances.get(instanceId);
     if (tunnel) {
       tunnel.lastSeen = Date.now();
     }
     return tunnel;
   }
 
-  list(): TenantTunnel[] {
-    return Array.from(this.tenants.values());
+  list(): InstanceTunnel[] {
+    return Array.from(this.instances.values());
   }
 }
 
@@ -60,10 +63,10 @@ export function parseProxyRequest(value: unknown): ProxyRequest | undefined {
   return data as ProxyRequest;
 }
 
-export function makeProxyResponse(payload: ProxyResponse, requestId: string, tenantId: TenantId): RelayEnvelope<ProxyResponse> {
+export function makeProxyResponse(payload: ProxyResponse, requestId: string, instanceId: InstanceId): RelayEnvelope<ProxyResponse> {
   return {
     type: 'proxy_response',
-    tenantId,
+    instanceId,
     requestId,
     payload,
     ts: Date.now(),

@@ -44,8 +44,8 @@ struct RelayEnvelope {
     type_name: String,
     #[serde(default, alias = "request_id")]
     request_id: Option<String>,
-    #[serde(default, alias = "tenant_id")]
-    tenant_id: Option<String>,
+    #[serde(default, alias = "instance_id")]
+    instance_id: Option<String>,
     #[serde(default)]
     payload: Option<Value>,
     #[serde(default)]
@@ -80,11 +80,10 @@ impl WebSocketBridge {
         let max_backoff = Duration::from_secs(60);
 
         loop {
-            let (ws_url, ws_token, configured_tenant_id, data_dir) = {
+            let (ws_url, ws_token, instance_id, data_dir) = {
                 let config = config_arc.read().unwrap();
-                (config.websocket_url.clone(), config.websocket_token.clone(), config.tenant_id.clone(), config.data_dir.clone())
+                (config.websocket_url.clone(), config.websocket_token.clone(), config.instance_id.clone(), config.data_dir.clone())
             };
-            let tenant_id = configured_tenant_id.or_else(|| account_manager.default_tenant_id());
 
             let url_str = match ws_url {
                 Some(ref url) if !url.trim().is_empty() => url.clone(),
@@ -95,8 +94,8 @@ impl WebSocketBridge {
                 }
             };
 
-            if tenant_id.as_deref().unwrap_or("").trim().is_empty() {
-                error!("WebSocket bridge is not configured with a tenant_id; skipping connection attempt until the relay tenant is set.");
+            if instance_id.as_deref().unwrap_or("").trim().is_empty() {
+                error!("WebSocket bridge is not configured with an instance_id; skipping connection attempt until the relay instance is set.");
                 bridge_connected.store(false, Ordering::SeqCst);
                 sleep(Duration::from_secs(10)).await;
                 continue;
@@ -109,7 +108,7 @@ impl WebSocketBridge {
                 continue;
             }
 
-            info!("Attempting WebSocket bridge connection to: {} for tenant {}", url_str, tenant_id.as_deref().unwrap_or("unknown"));
+            info!("Attempting WebSocket bridge connection to: {} for instance {}", url_str, instance_id.as_deref().unwrap_or("unknown"));
 
             match url_str.clone().into_client_request() {
                 Ok(mut request) => {
@@ -119,14 +118,14 @@ impl WebSocketBridge {
                                 request.headers_mut().insert("Authorization", header_val);
                             }
                             if let Ok(header_val) = token.parse() {
-                                request.headers_mut().insert("X-Tenant-Token", header_val);
+                                request.headers_mut().insert("X-Instance-Token", header_val);
                             }
                         }
                     }
 
-                    if let Some(ref tenant) = tenant_id {
-                        if let Ok(header_val) = tenant.parse() {
-                            request.headers_mut().insert("X-Tenant-Id", header_val);
+                    if let Some(ref instance) = instance_id {
+                        if let Ok(header_val) = instance.parse() {
+                            request.headers_mut().insert("X-Instance-Id", header_val);
                         }
                         let _ = url_str.clone();
                     }
@@ -220,10 +219,10 @@ impl WebSocketBridge {
                 let request: ProxyRequest = serde_json::from_value(payload_value)
                     .map_err(|e| format!("Failed to decode proxy request payload: {}", e))?;
 
-                let response = Self::handle_proxy_request(request, search_manager, share_registry, account_manager, data_dir, tunnel_token, envelope.tenant_id.as_deref().unwrap_or(""), request_id.clone());
+                let response = Self::handle_proxy_request(request, search_manager, share_registry, account_manager, data_dir, tunnel_token, envelope.instance_id.as_deref().unwrap_or(""), request_id.clone());
                 let outgoing = json!({
                     "type": "proxy_response",
-                    "tenantId": envelope.tenant_id,
+                    "instanceId": envelope.instance_id,
                     "requestId": request_id,
                     "payload": response,
                     "ts": chrono::Utc::now().timestamp_millis()
@@ -251,7 +250,7 @@ impl WebSocketBridge {
         account_manager: &AccountManager,
         data_dir: &str,
         tunnel_token: Option<&str>,
-        tenant_id: &str,
+        instance_id: &str,
         request_id: String,
     ) -> Value {
         let query = request.query.unwrap_or_default();
@@ -266,7 +265,7 @@ impl WebSocketBridge {
             .unwrap_or_else(|| "anonymous".to_string());
 
         let relay_user_is_valid = match (header_user.as_deref(), request.user.as_deref(), request.user_signature.as_deref(), tunnel_token) {
-            (None, Some(user), Some(signature), Some(token)) => verify_relay_user(token, tenant_id, &request_id, user, signature),
+            (None, Some(user), Some(signature), Some(token)) => verify_relay_user(token, instance_id, &request_id, user, signature),
             _ => false,
         };
 
@@ -421,10 +420,10 @@ impl WebSocketBridge {
     }
 }
 
-fn verify_relay_user(token: &str, tenant_id: &str, request_id: &str, user: &str, signature: &str) -> bool {
+fn verify_relay_user(token: &str, instance_id: &str, request_id: &str, user: &str, signature: &str) -> bool {
     let Ok(expected) = hex::decode(signature) else { return false; };
     let Ok(mut mac) = Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes()) else { return false; };
-    mac.update(format!("{tenant_id}\n{request_id}\n{user}").as_bytes());
+    mac.update(format!("{instance_id}\n{request_id}\n{user}").as_bytes());
     mac.verify_slice(&expected).is_ok()
 }
 
@@ -452,26 +451,26 @@ mod tests {
     #[test]
     fn relay_user_assertion_requires_the_tunnel_secret() {
         let token = "tunnel-token";
-        let tenant_id = "tenant-a";
+        let instance_id = "instance-a";
         let request_id = "request-1";
         let user = "alice@example.com";
         let mut mac = Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes()).unwrap();
-        mac.update(format!("{tenant_id}\n{request_id}\n{user}").as_bytes());
+        mac.update(format!("{instance_id}\n{request_id}\n{user}").as_bytes());
         let signature = hex::encode(mac.finalize().into_bytes());
 
         assert!(verify_relay_user(
-            token, tenant_id, request_id, user, &signature
+            token, instance_id, request_id, user, &signature
         ));
         assert!(!verify_relay_user(
             "wrong-token",
-            tenant_id,
+            instance_id,
             request_id,
             user,
             &signature
         ));
         assert!(!verify_relay_user(
             token,
-            tenant_id,
+            instance_id,
             request_id,
             "mallory@example.com",
             &signature

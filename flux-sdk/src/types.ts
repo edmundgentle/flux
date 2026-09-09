@@ -18,7 +18,7 @@ export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export type RequestEnvelope<T = unknown> = {
   type: 'proxy_request';
-  tenantId: string;
+  instanceId: string;
   requestId: string;
   payload: T;
   ts: number;
@@ -26,7 +26,7 @@ export type RequestEnvelope<T = unknown> = {
 
 export type ResponseEnvelope<T = unknown> = {
   type: 'proxy_response' | 'error';
-  tenantId?: string;
+  instanceId?: string;
   requestId?: string;
   payload?: T;
   error?: string;
@@ -90,10 +90,29 @@ export type UploadProgress = {
   percent: number;
 };
 
+export type AuthStorage = {
+  getItem(key: string): Promise<string | null>;
+  setItem(key: string, value: string): Promise<void>;
+  removeItem(key: string): Promise<void>;
+};
+
+/**
+ * Reports whether the device currently appears to be on the same local network as the
+ * Home Assistant instance (e.g. connected to home Wi-Fi). Return `null` when unknown -
+ * the SDK will still optimistically try the local instance first. Return `false` only
+ * when confident the local instance is unreachable (e.g. on cellular data), so the SDK
+ * skips straight to the cloud relay instead of waiting on a doomed local request.
+ */
+export type NetworkMonitor = {
+  isOnLocalNetwork(): boolean | null;
+  subscribe?(listener: (isOnLocalNetwork: boolean | null) => void): () => void;
+};
+
 export type FeatureConfig = {
-  relayUrl: string;
-  tenantId: string;
-  tenantToken?: string;
+  /** Overrides the built-in Flux cloud relay URL. Intended for testing only; end users cannot configure this. */
+  relayUrl?: string;
+  instanceId: string;
+  instanceToken?: string;
   accessToken?: string;
   localBaseUrl?: string;
   localAccessToken?: string;
@@ -102,27 +121,33 @@ export type FeatureConfig = {
   fetchImpl?: typeof fetch;
   onDiagnostic?: (event: DiagnosticEvent) => void;
   autoConnect?: boolean;
+  /** Optional persistent storage adapter (e.g. AsyncStorage) used to remember the signed-in session between app launches. */
+  storage?: AuthStorage;
+  /** Key used to store the persisted session in `storage`. */
+  storageKey?: string;
+  /** Optional network reachability adapter (e.g. backed by NetInfo) used to decide whether to try the local instance first. */
+  networkMonitor?: NetworkMonitor;
 };
 
 export type AuthCredentials = {
   username: string;
   password: string;
   displayName?: string;
-  tenantId?: string;
+  instanceId?: string;
 };
 
-export type AuthTenant = {
-  tenantId: string;
+export type AuthInstance = {
+  instanceId: string;
   label: string;
 };
 
 export type AuthSession = {
   user: string;
   token: string;
-  tenantId: string;
+  instanceId: string;
   tunnelToken?: string;
   label?: string;
-  tenants?: AuthTenant[];
+  instances?: AuthInstance[];
 };
 
 export type AuthApiResponse = {

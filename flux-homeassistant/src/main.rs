@@ -60,6 +60,11 @@ async fn main() {
 
     // 2. Load settings
     let config_manager = Arc::new(ConfigManager::new());
+
+    // On first boot with no relay credentials configured, auto-provision them from the
+    // cloud so the user never has to manually enter an instance id, URL, or token.
+    config_manager.ensure_cloud_registration().await;
+
     let current_config = config_manager.get_config();
     if let Err(err) = current_config.validate_bridge_settings() {
         error!("Rejected invalid relay configuration: {}", err);
@@ -67,10 +72,10 @@ async fn main() {
     }
 
     info!(
-        "Loaded settings: data_dir={}, scan_dirs={:?}, tenant_id={:?}, websocket_url={:?}",
+        "Loaded settings: data_dir={}, scan_dirs={:?}, instance_id={:?}, websocket_url={:?}",
         current_config.data_dir,
         current_config.scan_dirs,
-        current_config.tenant_id,
+        current_config.instance_id,
         current_config.websocket_url
     );
 

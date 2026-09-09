@@ -14,7 +14,7 @@ export function sleep(ms) {
 export function normalizeUrl(base) {
     return base.endsWith('/') ? base.slice(0, -1) : base;
 }
-export function buildRelaySocketUrl(base, tenantId, ticket) {
+export function buildRelaySocketUrl(base, instanceId, ticket) {
     const url = new URL(base);
     if (url.protocol === 'http:')
         url.protocol = 'ws:';
@@ -26,7 +26,7 @@ export function buildRelaySocketUrl(base, tenantId, ticket) {
     else if (!url.pathname.endsWith('/ws')) {
         url.pathname = `${url.pathname.replace(/\/$/, '')}/ws`;
     }
-    url.searchParams.set('tenant_id', tenantId);
+    url.searchParams.set('instance_id', instanceId);
     url.searchParams.set('ws_ticket', ticket);
     return url.toString();
 }

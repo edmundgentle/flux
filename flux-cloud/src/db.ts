@@ -35,25 +35,55 @@ export async function migrate(pool: Pool): Promise<void> {
     );
   `);
 
+  // Migrate the legacy "tenants" naming to "instances" in place, preserving existing data.
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS tenants (
-      tenant_id TEXT PRIMARY KEY,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'tenants')
+        AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'instances') THEN
+        ALTER TABLE tenants RENAME TO instances;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'instances' AND column_name = 'tenant_id') THEN
+        ALTER TABLE instances RENAME COLUMN tenant_id TO instance_id;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'sessions' AND column_name = 'tenant_id') THEN
+        ALTER TABLE sessions RENAME COLUMN tenant_id TO instance_id;
+      END IF;
+    END $$;
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS instances (
+      instance_id TEXT PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
       token_hash TEXT NOT NULL,
       label TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
 
+  // Instances may now be self-provisioned by a device before being claimed by a user account.
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS tenants_user_id_idx ON tenants (user_id);
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'instances' AND column_name = 'user_id' AND is_nullable = 'NO'
+      ) THEN
+        ALTER TABLE instances ALTER COLUMN user_id DROP NOT NULL;
+      END IF;
+    END $$;
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS instances_user_id_idx ON instances (user_id);
   `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+      instance_id TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
       expires_at TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
