@@ -126,7 +126,7 @@ async fn main() {
 
     // 7. Start outbound WebSocket client/bridge
     let bridge_connected = Arc::new(AtomicBool::new(false));
-    let bridge_config = config_manager.get_config_arc();
+    let bridge_config = config_manager.clone();
     let bridge_sm = search_manager.clone();
     let bridge_reg = share_registry.clone();
     let bridge_accounts = account_manager.clone();

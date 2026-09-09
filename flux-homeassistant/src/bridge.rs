@@ -1,5 +1,5 @@
 use crate::auth::AccountManager;
-use crate::config::AppConfig;
+use crate::config::ConfigManager;
 use crate::definitions::WEBSOCKET_URL;
 use crate::files::FileManager;
 use crate::search::SearchManager;
@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -69,7 +69,7 @@ pub struct WebSocketBridge;
 
 impl WebSocketBridge {
     pub async fn start(
-        config_arc: Arc<RwLock<AppConfig>>,
+        config_manager: Arc<ConfigManager>,
         search_manager: SearchManager,
         share_registry: ShareRegistry,
         account_manager: AccountManager,
@@ -81,8 +81,11 @@ impl WebSocketBridge {
         let max_backoff = Duration::from_secs(60);
 
         loop {
+            config_manager.ensure_cloud_registration().await;
+
             let (ws_token, instance_id, data_dir) = {
-                let config = config_arc.read().unwrap();
+                let config = config_manager.get_config_arc();
+                let config = config.read().unwrap();
                 (config.websocket_token.clone(), config.instance_id.clone(), config.data_dir.clone())
             };
 
