@@ -417,11 +417,13 @@ wss.on('connection', async (socket, request) => {
       }
     });
 
-    socket.on('close', () => {
+    socket.on('close', (code, reason) => {
+      console.warn(`Tenant ${tenantId} WebSocket closed ${isTunnel ? 'tunnel' : 'client'} code=${code} reason=${reason.toString() || 'none'}`);
       if (isTunnel) registry.unregister(tenantId);
     });
 
-    socket.on('error', () => {
+    socket.on('error', (error) => {
+      console.error(`Tenant ${tenantId} WebSocket error ${isTunnel ? 'tunnel' : 'client'}`, error);
       if (isTunnel) registry.unregister(tenantId);
     });
 

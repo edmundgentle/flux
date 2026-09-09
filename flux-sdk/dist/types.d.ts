@@ -116,7 +116,11 @@ export interface WebSocketLike {
         data: string | ArrayBuffer | Blob;
     }) => void) | null;
     onerror: ((event: unknown) => void) | null;
-    onclose: ((event: unknown) => void) | null;
+    onclose: ((event: {
+        code?: number;
+        reason?: string;
+        wasClean?: boolean;
+    }) => void) | null;
     send(data: string): void;
     close(code?: number, reason?: string): void;
 }

@@ -140,12 +140,16 @@ export class FluxClient {
                 if (!socketOpened)
                     reject(new Error('Relay socket failed to connect'));
             };
-            socket.onclose = () => {
+            socket.onclose = (event) => {
                 clearTimeout(timeout);
                 this.socket = null;
-                this.diagnostic('warn', 'relay.socket.close', socketOpened ? 'Cloud relay WebSocket closed' : 'Cloud relay WebSocket closed before opening');
+                const details = `code=${event.code ?? 'unknown'} reason=${event.reason || 'none'} clean=${event.wasClean ?? 'unknown'}`;
+                const message = socketOpened
+                    ? `Cloud relay WebSocket closed (${details})`
+                    : `Cloud relay WebSocket closed before opening (${details})`;
+                this.diagnostic('warn', 'relay.socket.close', message);
                 if (!socketOpened)
-                    reject(new Error('Relay socket closed before connecting'));
+                    reject(new Error(message));
                 if (this.reconnectEnabled) {
                     this.setState('reconnecting');
                     void this.retryConnect();
