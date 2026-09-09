@@ -1,4 +1,5 @@
 mod config;
+mod definitions;
 mod storage;
 mod cv;
 mod search;
@@ -72,11 +73,10 @@ async fn main() {
     }
 
     info!(
-        "Loaded settings: data_dir={}, scan_dirs={:?}, instance_id={:?}, websocket_url={:?}",
+        "Loaded settings: data_dir={}, scan_dirs={:?}, instance_id={:?}",
         current_config.data_dir,
         current_config.scan_dirs,
-        current_config.instance_id,
-        current_config.websocket_url
+        current_config.instance_id
     );
 
     // 3. Initialize account manager and share registry

@@ -1,3 +1,4 @@
+use crate::definitions::CLOUD_URL;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,15 +9,10 @@ use tracing::{info, warn};
 pub struct AppConfig {
     pub data_dir: String,
     pub scan_dirs: Vec<String>,
+    #[serde(default)]
     pub instance_id: Option<String>,
-    pub websocket_url: Option<String>,
+    #[serde(default)]
     pub websocket_token: Option<String>,
-    #[serde(default = "default_cloud_url")]
-    pub cloud_url: String,
-}
-
-fn default_cloud_url() -> String {
-    "https://flux-relay-fvnyy.ondigitalocean.app".to_string()
 }
 
 impl Default for AppConfig {
@@ -25,9 +21,7 @@ impl Default for AppConfig {
             data_dir: "/config/search_vision".to_string(),
             scan_dirs: vec!["/share".to_string(), "/media".to_string()],
             instance_id: None,
-            websocket_url: None,
             websocket_token: None,
-            cloud_url: default_cloud_url(),
         }
     }
 }
@@ -40,22 +34,14 @@ pub struct ConfigManager {
 impl AppConfig {
     pub fn validate_bridge_settings(&self) -> Result<(), String> {
         let has_instance = self.instance_id.as_ref().is_some_and(|value| !value.trim().is_empty());
-        let has_url = self.websocket_url.as_ref().is_some_and(|value| !value.trim().is_empty());
         let has_token = self.websocket_token.as_ref().is_some_and(|value| !value.trim().is_empty());
 
-        let configured_count = [has_instance, has_url, has_token].iter().filter(|&&value| value).count();
-        if configured_count == 0 {
+        if !has_instance && !has_token {
             return Ok(());
         }
 
-        if configured_count != 3 {
-            return Err("Partial relay configuration detected: instance_id, websocket_url, and websocket_token must all be set together".to_string());
-        }
-
-        if let Some(url) = &self.websocket_url {
-            if !url.starts_with("ws://") && !url.starts_with("wss://") {
-                return Err(format!("websocket_url must start with ws:// or wss:// (got: {})", url));
-            }
+        if !has_instance || !has_token {
+            return Err("Partial relay configuration detected: instance_id and websocket_token must be set together".to_string());
         }
 
         Ok(())
@@ -63,8 +49,8 @@ impl AppConfig {
 }
 
 /// Registers this Home Assistant instance with the cloud relay and returns the
-/// (instance_id, websocket_url, websocket_token) it was assigned.
-async fn bootstrap_from_cloud(cloud_url: &str) -> Result<(String, String, String), String> {
+/// (instance_id, websocket_token) it was assigned.
+async fn bootstrap_from_cloud() -> Result<(String, String), String> {
     #[derive(Deserialize)]
     struct ProvisionData {
         #[serde(rename = "instanceId")]
@@ -80,21 +66,8 @@ async fn bootstrap_from_cloud(cloud_url: &str) -> Result<(String, String, String
         message: Option<String>,
     }
 
-    let trimmed = cloud_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return Err("cloud_url is not configured".to_string());
-    }
-
-    let ws_base = if let Some(rest) = trimmed.strip_prefix("https://") {
-        format!("wss://{}", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        format!("ws://{}", rest)
-    } else {
-        return Err(format!("cloud_url must start with http:// or https:// (got: {})", trimmed));
-    };
-
     let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "Home Assistant".to_string());
-    let endpoint = format!("{}/api/instances/provision", trimmed);
+    let endpoint = format!("{}/api/instances/provision", CLOUD_URL);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -119,9 +92,7 @@ async fn bootstrap_from_cloud(cloud_url: &str) -> Result<(String, String, String
     }
 
     let data = parsed.data.ok_or_else(|| "Cloud relay response was missing provisioning data".to_string())?;
-    let websocket_url = format!("{}/ws", ws_base);
-
-    Ok((data.instance_id, websocket_url, data.tunnel_token))
+    Ok((data.instance_id, data.tunnel_token))
 }
 
 impl ConfigManager {
@@ -190,9 +161,6 @@ impl ConfigManager {
                         if overlay.instance_id.is_some() {
                             base_config.instance_id = overlay.instance_id;
                         }
-                        if overlay.websocket_url.is_some() {
-                            base_config.websocket_url = overlay.websocket_url;
-                        }
                         if overlay.websocket_token.is_some() {
                             base_config.websocket_token = overlay.websocket_token;
                         }
@@ -219,17 +187,15 @@ impl ConfigManager {
     pub async fn ensure_cloud_registration(&self) {
         let config = self.get_config();
         let has_instance = config.instance_id.as_ref().is_some_and(|v| !v.trim().is_empty());
-        let has_url = config.websocket_url.as_ref().is_some_and(|v| !v.trim().is_empty());
         let has_token = config.websocket_token.as_ref().is_some_and(|v| !v.trim().is_empty());
-        if has_instance || has_url || has_token {
+        if has_instance && has_token {
             return;
         }
 
-        match bootstrap_from_cloud(&config.cloud_url).await {
-            Ok((instance_id, websocket_url, websocket_token)) => {
+        match bootstrap_from_cloud().await {
+            Ok((instance_id, websocket_token)) => {
                 let mut updated = config;
                 updated.instance_id = Some(instance_id);
-                updated.websocket_url = Some(websocket_url);
                 updated.websocket_token = Some(websocket_token);
                 match self.update_config(updated) {
                     Ok(()) => info!("Auto-provisioned relay credentials from cloud; no manual configuration required"),
@@ -277,7 +243,7 @@ impl ConfigManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, default_cloud_url};
+    use super::AppConfig;
 
     #[test]
     fn partial_bridge_config_is_rejected() {
@@ -285,9 +251,7 @@ mod tests {
             data_dir: "/tmp/data".to_string(),
             scan_dirs: vec!["/tmp".to_string()],
             instance_id: Some("instance-abc".to_string()),
-            websocket_url: None,
-            websocket_token: Some("token-abc".to_string()),
-            cloud_url: default_cloud_url(),
+            websocket_token: None,
         };
 
         let result = config.validate_bridge_settings();
@@ -301,9 +265,7 @@ mod tests {
             data_dir: "/tmp/data".to_string(),
             scan_dirs: vec!["/tmp".to_string()],
             instance_id: Some("instance-abc".to_string()),
-            websocket_url: Some("wss://relay.example.com/ws".to_string()),
             websocket_token: Some("token-abc".to_string()),
-            cloud_url: default_cloud_url(),
         };
 
         assert!(config.validate_bridge_settings().is_ok());

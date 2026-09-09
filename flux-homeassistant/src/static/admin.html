@@ -114,12 +114,6 @@
       <button class="secondary" id="cloud-refresh-btn">Refresh</button>
     </div>
     <div class="muted">This instance keeps an outbound WebSocket tunnel open to the cloud relay for remote access, using the instance ID and tunnel token issued when it was registered via <code>/api/auth/register</code>. It can also be reached directly on the local network (e.g. <code>http://homeassistant.local:8080/</code>) using the same account credentials via the SDK's local (LAN) mode.</div>
-    <div class="toolbar" style="margin-top:12px;">
-      <input type="text" id="instance-id-input" placeholder="Instance ID" size="24" />
-      <input type="text" id="ws-url-input" placeholder="wss://relay.example.com/ws" size="30" />
-      <input type="password" id="ws-token-input" placeholder="Tunnel token (leave blank to keep current)" size="30" />
-      <button id="cloud-save-btn">Save</button>
-    </div>
     <div class="error" id="cloud-error"></div>
   </section>
 
@@ -153,9 +147,6 @@
   const cloudText = el('cloud-text');
   const cloudPanel = el('cloud-panel');
   const cloudError = el('cloud-error');
-  const instanceIdInput = el('instance-id-input');
-  const wsUrlInput = el('ws-url-input');
-  const wsTokenInput = el('ws-token-input');
 
   if (state.token) tokenInput.value = state.token;
 
@@ -179,58 +170,16 @@
       const data = await res.json();
       state.users = data.users;
       setCloudStatus(data.cloud_connected);
-      instanceIdInput.value = data.instance_id || '';
       renderUsers();
       loginPanel.style.display = 'none';
       usersPanel.style.display = 'block';
       cloudPanel.style.display = 'block';
       localStorage.setItem('flux_admin_token', state.token);
-      await loadCloudConfig();
     } catch (err) {
       loginError.textContent = err.message;
       usersPanel.style.display = 'none';
       cloudPanel.style.display = 'none';
       loginPanel.style.display = 'block';
-    }
-  }
-
-  async function loadCloudConfig() {
-    cloudError.textContent = '';
-    try {
-      const res = await fetch('/api/config', { headers: authHeaders() });
-      if (!res.ok) throw new Error('Failed to load cloud configuration (status ' + res.status + ')');
-      const config = await res.json();
-      instanceIdInput.value = config.instance_id || '';
-      wsUrlInput.value = config.websocket_url || '';
-    } catch (err) {
-      cloudError.textContent = err.message;
-    }
-  }
-
-  async function saveCloudConfig() {
-    cloudError.textContent = '';
-    try {
-      const res = await fetch('/api/config', { headers: authHeaders() });
-      const current = res.ok ? await res.json() : {};
-      const payload = {
-        ...current,
-        instance_id: instanceIdInput.value.trim() || null,
-        websocket_url: wsUrlInput.value.trim() || null,
-        websocket_token: wsTokenInput.value.trim() || current.websocket_token || null,
-      };
-      const saveRes = await fetch('/api/config', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!saveRes.ok) {
-        const body = await saveRes.json().catch(() => ({}));
-        throw new Error(body.message || ('Save failed with status ' + saveRes.status));
-      }
-      wsTokenInput.value = '';
-      await loadUsers();
-    } catch (err) {
-      cloudError.textContent = err.message;
     }
   }
 
@@ -368,8 +317,7 @@
     loadUsers();
   });
   el('refresh-btn').addEventListener('click', loadUsers);
-  el('cloud-refresh-btn').addEventListener('click', loadCloudConfig);
-  el('cloud-save-btn').addEventListener('click', saveCloudConfig);
+  el('cloud-refresh-btn').addEventListener('click', loadUsers);
 
   if (state.token) loadUsers();
 })();

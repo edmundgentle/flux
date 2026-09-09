@@ -1,5 +1,5 @@
 use crate::auth::{AccountManager, LoginResponse};
-use crate::config::{AppConfig, ConfigManager};
+use crate::config::ConfigManager;
 use crate::files::FileManager;
 use crate::search::{SearchManager, SearchResult};
 use crate::sharing::{Share, ShareRegistry};
@@ -146,8 +146,6 @@ pub struct ApiResponse<T> {
 
 pub fn create_router(state: AppState) -> axum::Router {
     axum::Router::new()
-        // Config endpoints
-        .route("/api/config", get(get_config).post(update_config))
         // Storage endpoints
         .route("/api/storage/mounts", get(list_mounts))
         .route("/api/storage/scan", get(scan_directory))
@@ -341,51 +339,6 @@ async fn login_user(
             Json(ApiResponse {
                 success: false,
                 message: e,
-                data: None,
-            }),
-        )),
-    }
-}
-
-async fn get_config(
-    headers: HeaderMap,
-    Query(params): Query<UploadQueryParams>, // Just reuse user extraction
-    State(state): State<AppState>,
-) -> Result<Json<AppConfig>, (StatusCode, Json<ApiResponse<()>>)> {
-    let _ = get_request_user(&headers, params.user.as_deref(), params.token.as_deref(), &state.account_manager)?;
-    let mut config = state.config_manager.get_config();
-    config.websocket_token = None;
-    Ok(Json(config))
-}
-
-async fn update_config(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Json(payload): Json<AppConfig>,
-) -> Result<Json<ApiResponse<()>>, (StatusCode, Json<ApiResponse<()>>)> {
-    let requesting_user = get_request_user(&headers, None, None, &state.account_manager)?;
-    if !state.account_manager.is_admin(&requesting_user) {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ApiResponse {
-                success: false,
-                message: "Only 'admin' is authorized to update system configurations".to_string(),
-                data: None,
-            }),
-        ));
-    }
-
-    match state.config_manager.update_config(payload) {
-        Ok(_) => Ok(Json(ApiResponse {
-            success: true,
-            message: "Configuration updated successfully".to_string(),
-            data: None,
-        })),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse {
-                success: false,
-                message: format!("Failed to update config: {}", e),
                 data: None,
             }),
         )),

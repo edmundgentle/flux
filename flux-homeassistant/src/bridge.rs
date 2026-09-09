@@ -1,5 +1,6 @@
 use crate::auth::AccountManager;
 use crate::config::AppConfig;
+use crate::definitions::WEBSOCKET_URL;
 use crate::files::FileManager;
 use crate::search::SearchManager;
 use crate::sharing::ShareRegistry;
@@ -80,18 +81,9 @@ impl WebSocketBridge {
         let max_backoff = Duration::from_secs(60);
 
         loop {
-            let (ws_url, ws_token, instance_id, data_dir) = {
+            let (ws_token, instance_id, data_dir) = {
                 let config = config_arc.read().unwrap();
-                (config.websocket_url.clone(), config.websocket_token.clone(), config.instance_id.clone(), config.data_dir.clone())
-            };
-
-            let url_str = match ws_url {
-                Some(ref url) if !url.trim().is_empty() => url.clone(),
-                _ => {
-                    bridge_connected.store(false, Ordering::SeqCst);
-                    sleep(Duration::from_secs(10)).await;
-                    continue;
-                }
+                (config.websocket_token.clone(), config.instance_id.clone(), config.data_dir.clone())
             };
 
             if instance_id.as_deref().unwrap_or("").trim().is_empty() {
@@ -108,9 +100,9 @@ impl WebSocketBridge {
                 continue;
             }
 
-            info!("Attempting WebSocket bridge connection to: {} for instance {}", url_str, instance_id.as_deref().unwrap_or("unknown"));
+            info!("Attempting WebSocket bridge connection to: {} for instance {}", WEBSOCKET_URL, instance_id.as_deref().unwrap_or("unknown"));
 
-            match url_str.clone().into_client_request() {
+            match WEBSOCKET_URL.into_client_request() {
                 Ok(mut request) => {
                     if let Some(ref token) = ws_token {
                         if !token.trim().is_empty() {
@@ -127,7 +119,6 @@ impl WebSocketBridge {
                         if let Ok(header_val) = instance.parse() {
                             request.headers_mut().insert("X-Instance-Id", header_val);
                         }
-                        let _ = url_str.clone();
                     }
 
                     match tokio_tungstenite::connect_async(request).await {
@@ -191,7 +182,7 @@ impl WebSocketBridge {
                 }
                 Err(e) => {
                     bridge_connected.store(false, Ordering::SeqCst);
-                    error!("Invalid WebSocket URL structure '{}': {}", url_str, e);
+                    error!("Invalid WebSocket URL structure '{}': {}", WEBSOCKET_URL, e);
                 }
             }
 
