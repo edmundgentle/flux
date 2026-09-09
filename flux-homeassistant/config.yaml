@@ -1,5 +1,5 @@
 name: Flux
-version: "1.0.0"
+version: "1.0.1"
 slug: flux
 description: Local personal search, file management, and vision analysis server.
 arch:
@@ -28,7 +28,7 @@ schema:
   tenant_id: str?
   websocket_url: str?
   websocket_token: password?
-privileged:
-  - SYS_ADMIN
-devices:
-  - /dev/fuse
+# privileged: (temporarily disabled to isolate startup failure)
+#   - SYS_ADMIN
+# devices:
+#   - /dev/fuse
