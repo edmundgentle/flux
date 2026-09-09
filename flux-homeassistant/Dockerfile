@@ -25,6 +25,13 @@ RUN rm -rf src
 # Copy actual source files
 COPY src ./src
 
+# Force fresh mtimes so Cargo doesn't reuse the dummy binary (COPY can normalize
+# timestamps to a fixed value that appears older than the cached dummy build)
+RUN find src -exec touch {} + && touch -c src/main.rs
+
+# Remove the dummy binary/fingerprints so this build is forced to relink
+RUN rm -f target/release/flux-homeassistant target/release/deps/flux_homeassistant-*
+
 # Build the release binary
 RUN cargo build --release
 
@@ -52,4 +59,4 @@ EXPOSE 8080
 ENV RUST_LOG=info
 
 # Start the application
-CMD ["/bin/sh", "-c", "ls -la /app/server; wc -c < /app/server; echo \"[diagnostic] entrypoint reached at $(date +%s.%N), pid=$$\"; /app/server & pid=$!; wait $pid; echo \"[diagnostic] server (pid $pid) exited with code $? at $(date +%s.%N)\""]
+CMD ["/app/server"]

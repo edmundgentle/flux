@@ -1,9 +1,0 @@
-name: Flux Test
-version: "1.0.0"
-slug: fluxtest
-description: Minimal diagnostic app to test custom add-on builds.
-arch:
-  - amd64
-  - aarch64
-startup: application
-boot: manual
