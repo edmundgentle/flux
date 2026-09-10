@@ -36,7 +36,16 @@ struct VisionModels {
 static VISION_MODELS: OnceLock<VisionModels> = OnceLock::new();
 
 fn models_dir() -> PathBuf {
-    std::env::var("MODELS_DIR").unwrap_or_else(|_| "/app/models".to_string()).into()
+    if let Ok(dir) = std::env::var("MODELS_DIR") {
+        return dir.into();
+    }
+    // Docker image path; fall back to the repo-relative dir for local `cargo run`/`cargo test`.
+    let docker_default = PathBuf::from("/app/models");
+    if docker_default.is_dir() {
+        docker_default
+    } else {
+        PathBuf::from("models")
+    }
 }
 
 fn load_session(dir: &Path, file_name: &str) -> Option<Session> {
