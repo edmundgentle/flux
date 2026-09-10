@@ -19,6 +19,22 @@ function decodeBase64(value) {
     }
     return bytes;
 }
+/**
+ * Builds a Blob from raw bytes. React Native's Blob implementation doesn't support
+ * constructing a Blob directly from an ArrayBuffer/ArrayBufferView ("Creating blobs from
+ * 'ArrayBuffer' and 'ArrayBufferView' are not supported"), so fall back to fetching a
+ * data URI there, which its fetch/Blob implementation does support.
+ */
+async function bytesToBlob(bytes, mimeType) {
+    try {
+        return new Blob([bytes.buffer], { type: mimeType });
+    }
+    catch {
+        const dataUri = `data:${mimeType};base64,${encodeBase64(bytes)}`;
+        const response = await fetch(dataUri);
+        return await response.blob();
+    }
+}
 export class FluxClient {
     config;
     socket = null;
@@ -471,7 +487,7 @@ export class FluxClient {
             const url = new URL('/api/files/upload', baseUrl);
             url.searchParams.set('path', uploadPath);
             const form = new FormData();
-            form.append('file', new Blob([bytes.buffer], { type: getMimeType(fileName) }), fileName);
+            form.append('file', await bytesToBlob(bytes, getMimeType(fileName)), fileName);
             const response = await this.fetchImpl(url, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${token}` },
@@ -498,7 +514,7 @@ export class FluxClient {
             if (!payload.content_b64)
                 throw new Error('Download response did not include file content');
             const bytes = decodeBase64(payload.content_b64);
-            return new Blob([bytes.buffer], { type: payload.mime_type || 'application/octet-stream' });
+            return await bytesToBlob(bytes, payload.mime_type || 'application/octet-stream');
         };
         return await this.withLocalFallback('download', async (baseUrl, token) => {
             const url = new URL('/api/files/download', baseUrl);

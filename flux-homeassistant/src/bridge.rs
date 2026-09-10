@@ -4,6 +4,7 @@ use crate::definitions::WEBSOCKET_URL;
 use crate::files::FileManager;
 use crate::search::SearchManager;
 use crate::sharing::ShareRegistry;
+use crate::api::guess_mime;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -342,7 +343,7 @@ impl WebSocketBridge {
                     Ok(bytes) => {
                         let payload = json!({
                             "file_name": file_path_buf.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
-                            "mime_type": "application/octet-stream",
+                            "mime_type": guess_mime(&file_path_buf),
                             "content_b64": STANDARD.encode(bytes)
                         });
                         json!({ "status": 200, "body": payload, "data": payload })
