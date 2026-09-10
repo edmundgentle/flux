@@ -31,19 +31,12 @@ function decodeBase64(value: string): Uint8Array {
 }
 
 /**
- * Builds a Blob from raw bytes. React Native's Blob implementation doesn't support
- * constructing a Blob directly from an ArrayBuffer/ArrayBufferView ("Creating blobs from
- * 'ArrayBuffer' and 'ArrayBufferView' are not supported"), so fall back to fetching a
- * data URI there, which its fetch/Blob implementation does support.
+ * Builds a Blob from raw bytes. Works on web and Node; React Native's Blob implementation
+ * doesn't support constructing a Blob directly from an ArrayBuffer/ArrayBufferView, so
+ * native callers that need image bytes should use `downloadFileAsDataUri` instead.
  */
-async function bytesToBlob(bytes: Uint8Array, mimeType: string): Promise<Blob> {
-  try {
-    return new Blob([bytes.buffer as ArrayBuffer], { type: mimeType });
-  } catch {
-    const dataUri = `data:${mimeType};base64,${encodeBase64(bytes)}`;
-    const response = await fetch(dataUri);
-    return await response.blob();
-  }
+function bytesToBlob(bytes: Uint8Array, mimeType: string): Blob {
+  return new Blob([bytes.buffer as ArrayBuffer], { type: mimeType });
 }
 
 export class FluxClient {
@@ -500,7 +493,7 @@ export class FluxClient {
         const url = new URL('/api/files/upload', baseUrl);
         url.searchParams.set('path', uploadPath);
         const form = new FormData();
-        form.append('file', await bytesToBlob(bytes, getMimeType(fileName)), fileName);
+        form.append('file', bytesToBlob(bytes, getMimeType(fileName)), fileName);
         const response = await this.fetchImpl(url, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
@@ -525,7 +518,7 @@ export class FluxClient {
       const payload = await response.json() as { content_b64?: string; mime_type?: string; file_name?: string };
       if (!payload.content_b64) throw new Error('Download response did not include file content');
       const bytes = decodeBase64(payload.content_b64);
-      return await bytesToBlob(bytes, payload.mime_type || 'application/octet-stream');
+      return bytesToBlob(bytes, payload.mime_type || 'application/octet-stream');
     };
     return await this.withLocalFallback(
       'download',
@@ -544,6 +537,44 @@ export class FluxClient {
         if (options.user) url.searchParams.set('user', options.user);
         const response = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${token || ''}` } });
         return await parseDownload(response);
+      },
+    );
+  }
+
+  /**
+   * Like `downloadFile`, but returns a base64 data URI string instead of a Blob. Useful on
+   * React Native, where Blobs can't be constructed directly from raw bytes but a data URI
+   * can be handed straight to `<Image>` or similar.
+   */
+  public async downloadFileAsDataUri(path: string, options: DownloadOptions = {}): Promise<string> {
+    const parseDataUri = async (response: Response): Promise<string> => {
+      if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const payload = await response.json() as { content_b64?: string; mime_type?: string };
+        if (!payload.content_b64) throw new Error('Download response did not include file content');
+        return `data:${payload.mime_type || 'application/octet-stream'};base64,${payload.content_b64}`;
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return `data:${contentType || 'application/octet-stream'};base64,${encodeBase64(bytes)}`;
+    };
+    return await this.withLocalFallback(
+      'download',
+      async (baseUrl, token) => {
+        const url = new URL('/api/files/download', baseUrl);
+        url.searchParams.set('path', path);
+        if (options.user) url.searchParams.set('user', options.user);
+        const response = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${token}` } });
+        return await parseDataUri(response);
+      },
+      async () => {
+        const token = this.authSession?.token || this.config.accessToken;
+        const url = new URL('/api/files/download', this.relayUrl);
+        url.searchParams.set('instance_id', this.config.instanceId);
+        url.searchParams.set('path', path);
+        if (options.user) url.searchParams.set('user', options.user);
+        const response = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${token || ''}` } });
+        return await parseDataUri(response);
       },
     );
   }

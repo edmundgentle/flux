@@ -71,6 +71,12 @@ export declare class FluxClient {
         path: string;
     }>;
     downloadFile(path: string, options?: DownloadOptions): Promise<Blob>;
+    /**
+     * Like `downloadFile`, but returns a base64 data URI string instead of a Blob. Useful on
+     * React Native, where Blobs can't be constructed directly from raw bytes but a data URI
+     * can be handed straight to `<Image>` or similar.
+     */
+    downloadFileAsDataUri(path: string, options?: DownloadOptions): Promise<string>;
     getConfig(): Promise<Record<string, unknown>>;
     disconnect(): Promise<void>;
 }

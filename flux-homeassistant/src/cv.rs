@@ -1,6 +1,6 @@
 use chrono::NaiveDateTime;
 use exif::{In, Reader, Tag, Value};
-use image::{imageops::FilterType, GenericImageView, Pixel};
+use image::{GenericImageView, Pixel};
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::Path;
@@ -114,10 +114,9 @@ impl CvPipeline {
                     tags.push("low_resolution".to_string());
                 }
 
-                // Analyze color/hue histogram, brightness, and edge energy on a sampled grid
+                // Analyze brightness and edge energy on a sampled grid (structural heuristics only;
+                // color/hue is intentionally not used to guess scene content like "sunset"/"nature")
                 let mut total_brightness: u64 = 0;
-                let mut hue_counts: std::collections::HashMap<&'static str, u32> = std::collections::HashMap::new();
-                let mut grayscale_samples: u32 = 0;
                 let mut edge_energy: u64 = 0;
                 let mut edge_pairs: u32 = 0;
                 let sample_step = 10;
@@ -134,11 +133,6 @@ impl CvPipeline {
                         let brightness = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as i64;
                         total_brightness += brightness as u64;
                         samples += 1;
-
-                        match Self::classify_hue(r, g, b) {
-                            Some(hue) => *hue_counts.entry(hue).or_insert(0) += 1,
-                            None => grayscale_samples += 1,
-                        }
 
                         // Edge energy: squared brightness delta between horizontally adjacent samples
                         if let Some(prev) = prev_brightness {
@@ -159,7 +153,6 @@ impl CvPipeline {
                         tags.push("dark".to_string());
                     } else if avg_brightness > 200 {
                         tags.push("bright".to_string());
-                        tags.push("indoor".to_string());
                     }
 
                     // Tag based on sharpness: low variance in local brightness deltas means a blurry image
@@ -171,48 +164,10 @@ impl CvPipeline {
                             tags.push("sharp".to_string());
                         }
                     }
-
-                    // Tag based on dominant hue(s) detected across sampled pixels
-                    if grayscale_samples as f32 / samples as f32 > 0.85 {
-                        tags.push("monochrome".to_string());
-                    } else if !hue_counts.is_empty() {
-                        let mut ranked: Vec<(&str, u32)> = hue_counts.into_iter().collect();
-                        ranked.sort_by(|a, b| b.1.cmp(&a.1));
-
-                        let dominant_hues: Vec<&str> = ranked
-                            .iter()
-                            .filter(|(_, count)| *count as f32 / samples as f32 > 0.12)
-                            .map(|(hue, _)| *hue)
-                            .collect();
-
-                        if dominant_hues.len() >= 3 {
-                            tags.push("colorful".to_string());
-                        }
-
-                        for hue in &dominant_hues {
-                            tags.push(hue.to_string());
-                        }
-
-                        // Higher-level semantic tags derived from the dominant hue + brightness
-                        if let Some(&top_hue) = dominant_hues.first() {
-                            match top_hue {
-                                "green" if avg_brightness > 60 => {
-                                    tags.push("nature".to_string());
-                                }
-                                "blue" if avg_brightness > 100 => {
-                                    tags.push("sky".to_string());
-                                }
-                                "orange" | "red" if avg_brightness > 60 && avg_brightness < 200 => {
-                                    tags.push("sunset".to_string());
-                                    tags.push("warm".to_string());
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
                 }
 
-                // 5. Object/face/expression detection via local ONNX models
+                // 5. Object/face detection + facial fingerprinting via local ONNX models
+                // (YOLOv8 for objects/faces, Facenet512 for identity fingerprints)
                 let vision = crate::detect::analyze(&img);
                 for tag in vision.object_tags {
                     tags.push(tag);
@@ -227,25 +182,7 @@ impl CvPipeline {
                 if vision.smiling {
                     tags.push("smile".to_string());
                 }
-
-                // Generate face embeddings / image similarities fingerprint
-                // Let's create a 64-bit dHash of the image as a face / identity descriptor
-                // `resize_exact` (not `thumbnail`, which preserves aspect ratio) guarantees a 9x8 output
-                let resized = img.resize_exact(9, 8, FilterType::Triangle).grayscale();
-                let mut hash: u64 = 0;
-                for y in 0..8 {
-                    for x in 0..8 {
-                        let left = resized.get_pixel(x, y)[0];
-                        let right = resized.get_pixel(x + 1, y)[0];
-                        if left > right {
-                            hash |= 1 << (y * 8 + x);
-                        }
-                    }
-                }
-                
-                // Let's add face clustering tags based on fingerprint similarity groups
-                let face_cluster = format!("face_cluster_{:04x}", hash & 0xFFF);
-                faces.push(face_cluster);
+                faces.extend(vision.face_fingerprints);
             }
             Err(e) => {
                 warn!("Image processing failed for {:?}, skipping visual tags: {}", file_path, e);
@@ -262,47 +199,6 @@ impl CvPipeline {
             latitude,
             longitude,
             date_created,
-        })
-    }
-
-    /// Classifies an RGB pixel into a coarse hue bucket, or `None` if it's too
-    /// desaturated/dark to reliably indicate a color (i.e. it's grayscale-ish).
-    fn classify_hue(r: u8, g: u8, b: u8) -> Option<&'static str> {
-        let r = r as f32 / 255.0;
-        let g = g as f32 / 255.0;
-        let b = b as f32 / 255.0;
-        let max = r.max(g).max(b);
-        let min = r.min(g).min(b);
-        let delta = max - min;
-        let value = max;
-        let saturation = if max == 0.0 { 0.0 } else { delta / max };
-
-        if saturation < 0.15 || value < 0.1 {
-            return None;
-        }
-
-        let mut hue = if delta == 0.0 {
-            0.0
-        } else if max == r {
-            60.0 * (((g - b) / delta).rem_euclid(6.0))
-        } else if max == g {
-            60.0 * (((b - r) / delta) + 2.0)
-        } else {
-            60.0 * (((r - g) / delta) + 4.0)
-        };
-        if hue < 0.0 {
-            hue += 360.0;
-        }
-
-        Some(match hue as u32 {
-            0..=15 | 346..=360 => "red",
-            16..=45 => "orange",
-            46..=70 => "yellow",
-            71..=170 => "green",
-            171..=200 => "cyan",
-            201..=255 => "blue",
-            256..=290 => "purple",
-            _ => "pink",
         })
     }
 
