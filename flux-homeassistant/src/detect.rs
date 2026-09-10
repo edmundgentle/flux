@@ -5,8 +5,6 @@
 //! - `yolov8n-face.onnx` — Ultralytics YOLOv8 model fine-tuned for face detection (single class)
 //! - `facenet512.onnx` — DeepFace "Facenet512" face-embedding model, used to fingerprint/cluster
 //!   faces by identity instead of by raw pixel similarity
-//! - `emotion-ferplus-8.onnx` — FER+ facial expression classifier (unchanged), used only to flag
-//!   smiling faces
 //!
 //! Each model is loaded independently and lazily from the directory pointed to by the
 //! `MODELS_DIR` env var (default `/app/models`). If a given model is missing or fails to load,
@@ -23,7 +21,6 @@ use tracing::warn;
 pub struct VisionResult {
     pub object_tags: Vec<String>,
     pub face_count: usize,
-    pub smiling: bool,
     /// One fingerprint tag (e.g. `face_cluster_xxxxxxxxxxxxxxxx`) per detected face, derived
     /// from a locality-sensitive hash of its Facenet512 embedding so photos of the same person
     /// tend to land in the same bucket.
@@ -34,7 +31,6 @@ struct VisionModels {
     object_session: Option<Mutex<Session>>,
     face_session: Option<Mutex<Session>>,
     embedding_session: Option<Mutex<Session>>,
-    emotion_session: Option<Mutex<Session>>,
 }
 
 static VISION_MODELS: OnceLock<VisionModels> = OnceLock::new();
@@ -69,7 +65,6 @@ fn get_models() -> &'static VisionModels {
             object_session: load_session(&dir, "yolov8n.onnx").map(Mutex::new),
             face_session: load_session(&dir, "yolov8n-face.onnx").map(Mutex::new),
             embedding_session: load_session(&dir, "facenet512.onnx").map(Mutex::new),
-            emotion_session: load_session(&dir, "emotion-ferplus-8.onnx").map(Mutex::new),
         }
     })
 }
@@ -84,12 +79,12 @@ pub fn analyze(img: &DynamicImage) -> VisionResult {
         Vec::new()
     });
 
-    let (face_count, smiling, face_fingerprints) = detect_faces(models, img).unwrap_or_else(|e| {
+    let (face_count, face_fingerprints) = detect_faces(models, img).unwrap_or_else(|e| {
         warn!("Face detection/fingerprinting failed: {}", e);
-        (0, false, Vec::new())
+        (0, Vec::new())
     });
 
-    VisionResult { object_tags, face_count, smiling, face_fingerprints }
+    VisionResult { object_tags, face_count, face_fingerprints }
 }
 
 /// Greedy non-max suppression over (score, class_id, [x1,y1,x2,y2]) candidates, applied
@@ -204,16 +199,16 @@ fn detect_objects(models: &VisionModels, img: &DynamicImage) -> Result<Vec<Strin
     Ok(tags)
 }
 
-/// Detects faces, fingerprints each one via its Facenet512 embedding, and flags whether any
-/// face is smiling. Returns (face_count, any_smiling, face_fingerprints).
-fn detect_faces(models: &VisionModels, img: &DynamicImage) -> Result<(usize, bool, Vec<String>), String> {
+/// Detects faces and fingerprints each one via its Facenet512 embedding.
+/// Returns (face_count, face_fingerprints).
+fn detect_faces(models: &VisionModels, img: &DynamicImage) -> Result<(usize, Vec<String>), String> {
     const INPUT_SIZE: u32 = 640;
     const CONFIDENCE_THRESHOLD: f32 = 0.5;
     const IOU_THRESHOLD: f32 = 0.45;
     const MAX_FACES_TO_PROCESS: usize = 8;
 
     let Some(face_session) = &models.face_session else {
-        return Ok((0, false, Vec::new()));
+        return Ok((0, Vec::new()));
     };
 
     let (orig_width, orig_height) = img.dimensions();
@@ -253,7 +248,6 @@ fn detect_faces(models: &VisionModels, img: &DynamicImage) -> Result<(usize, boo
     let scale_x = orig_width as f32 / INPUT_SIZE as f32;
     let scale_y = orig_height as f32 / INPUT_SIZE as f32;
 
-    let mut smiling = false;
     let mut face_fingerprints = Vec::new();
     for (_, _, b) in kept.iter().take(MAX_FACES_TO_PROCESS) {
         let x1 = (b[0] * scale_x).max(0.0) as u32;
@@ -269,13 +263,9 @@ fn detect_faces(models: &VisionModels, img: &DynamicImage) -> Result<(usize, boo
         if let Ok(embedding) = compute_face_embedding(models, &crop) {
             face_fingerprints.push(face_fingerprint(&embedding));
         }
-
-        if classify_smile(models, &crop)? {
-            smiling = true;
-        }
     }
 
-    Ok((face_count, smiling, face_fingerprints))
+    Ok((face_count, face_fingerprints))
 }
 
 /// Runs the Facenet512 embedding model on a cropped face, returning its 512-d L2-normalized
@@ -351,43 +341,6 @@ fn lsh_hyperplane_component(bit: u32, dim: u32) -> f32 {
     ((x as f64 / u64::MAX as f64) * 2.0 - 1.0) as f32
 }
 
-/// Runs the FER+ emotion model on a cropped face and returns true if "happiness" is the
-/// dominant expression.
-fn classify_smile(models: &VisionModels, face: &DynamicImage) -> Result<bool, String> {
-    let Some(emotion_session) = &models.emotion_session else {
-        return Ok(false);
-    };
-
-    let gray = face.resize_exact(64, 64, FilterType::Triangle).to_luma8();
-    let data: Vec<f32> = gray.into_raw().into_iter().map(|p| p as f32).collect();
-    let input = Array4::from_shape_vec((1, 1, 64, 64), data).map_err(|e| e.to_string())?;
-    let input = Tensor::from_array(input).map_err(|e| e.to_string())?;
-
-    let mut emotion_session = emotion_session.lock().map_err(|_| "emotion session lock poisoned".to_string())?;
-    let outputs = emotion_session
-        .run(ort::inputs!["Input3" => input])
-        .map_err(|e| e.to_string())?;
-    let logits = outputs["Plus692_Output_0"].try_extract_array::<f32>().map_err(|e| e.to_string())?;
-    let logits = logits.as_slice().ok_or("unexpected emotion output layout")?;
-
-    // FER+ classes: 0=neutral 1=happiness 2=surprise 3=sadness 4=anger 5=disgust 6=fear 7=contempt
-    let probs = softmax(logits);
-    let (top_idx, &top_prob) = probs
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .ok_or("empty emotion output")?;
-
-    Ok(top_idx == 1 && top_prob > 0.4)
-}
-
-fn softmax(logits: &[f32]) -> Vec<f32> {
-    let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let exps: Vec<f32> = logits.iter().map(|v| (v - max).exp()).collect();
-    let sum: f32 = exps.iter().sum();
-    exps.iter().map(|v| v / sum).collect()
-}
-
 /// The 80-class MS COCO label map used by Ultralytics YOLOv8 (indices 0..=79, no gaps).
 fn coco80_label(id: u32) -> Option<&'static str> {
     const LABELS: [&str; 80] = [
@@ -423,8 +376,8 @@ mod tests {
 
         let result = analyze(&img);
         println!(
-            "objects={:?} face_count={} smiling={} fingerprints={:?}",
-            result.object_tags, result.face_count, result.smiling, result.face_fingerprints
+            "objects={:?} face_count={} fingerprints={:?}",
+            result.object_tags, result.face_count, result.face_fingerprints
         );
     }
 
@@ -435,8 +388,8 @@ mod tests {
         let img = image::open(path).expect("failed to open TEST_IMAGE");
         let result = analyze(&img);
         println!(
-            "objects={:?} face_count={} smiling={} fingerprints={:?}",
-            result.object_tags, result.face_count, result.smiling, result.face_fingerprints
+            "objects={:?} face_count={} fingerprints={:?}",
+            result.object_tags, result.face_count, result.face_fingerprints
         );
     }
 

@@ -7,9 +7,9 @@ DeepFace and convert it to ONNX locally with tf2onnx rather than hardcoding a ra
 URL for an ONNX file that may not exist anywhere stable.
 
 Usage:
-    pip install deepface tf2onnx tensorflow
+    pip install deepface tf2onnx tensorflow tf-keras
     python3 models/export_facenet_onnx.py
-    # -> writes models/facenet512.onnx (input "input": 1x160x160x3 RGB, output "embedding": 1x512)
+    # -> writes models/facenet512.onnx (input "input": 1x160x160x3 RGB, output: 1x512 embedding)
 
 Note the input layout here is NHWC (channels-last), matching Keras' default. src/detect.rs
 builds a CHW tensor for other models but must transpose to NHWC before calling this one -

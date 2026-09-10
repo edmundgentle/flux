@@ -1,5 +1,5 @@
 name: Flux
-version: "1.0.20"
+version: "1.0.21"
 slug: flux
 description: Local personal search, file management, and vision analysis server.
 arch:

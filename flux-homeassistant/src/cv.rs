@@ -179,9 +179,6 @@ impl CvPipeline {
                     tags.push("people".to_string());
                     tags.push("face".to_string());
                 }
-                if vision.smiling {
-                    tags.push("smile".to_string());
-                }
                 faces.extend(vision.face_fingerprints);
             }
             Err(e) => {
