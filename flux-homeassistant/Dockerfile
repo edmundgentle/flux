@@ -32,8 +32,12 @@ RUN find src -exec touch {} + && touch -c src/main.rs
 # Remove the dummy binary/fingerprints so this build is forced to relink
 RUN rm -f target/release/flux-homeassistant target/release/deps/flux_homeassistant-*
 
-# Build the release binary
+# Build the release binary (ort statically links its own onnxruntime binary at this step)
 RUN cargo build --release
+
+# Fetch the ONNX models used for offline object/face/expression detection
+COPY models ./models
+RUN sh models/download-models.sh
 
 # ==========================================
 # 2. Runner Stage
@@ -51,6 +55,11 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /usr/src/app/target/release/flux-homeassistant /app/server
+
+# Copy vision models from builder
+COPY --from=builder /usr/src/app/models /app/models
+ENV MODELS_DIR=/app/models
+
 
 # Expose port
 EXPOSE 8080

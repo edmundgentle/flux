@@ -2,6 +2,7 @@ mod config;
 mod definitions;
 mod storage;
 mod cv;
+mod detect;
 mod search;
 mod files;
 mod bridge;

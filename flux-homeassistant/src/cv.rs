@@ -91,7 +91,7 @@ impl CvPipeline {
         match image::open(file_path) {
             Ok(img) => {
                 let (width, height) = img.dimensions();
-                
+
                 // If it looks like a long vertical document, tag it as receipt/document
                 let ratio = height as f32 / width as f32;
                 if ratio > 2.2 && width < 1200 {
@@ -99,34 +99,59 @@ impl CvPipeline {
                     tags.push("document".to_string());
                 }
 
-                // Analyze color histogram & brightness on a sampled grid (e.g. 10x10)
-                let mut total_r: u64 = 0;
-                let mut total_g: u64 = 0;
-                let mut total_b: u64 = 0;
+                // Orientation & resolution tags
+                if width > height {
+                    tags.push("landscape_orientation".to_string());
+                } else if height > width {
+                    tags.push("portrait_orientation".to_string());
+                } else {
+                    tags.push("square_orientation".to_string());
+                }
+                let megapixels = (width as u64 * height as u64) as f64 / 1_000_000.0;
+                if megapixels >= 8.0 {
+                    tags.push("high_resolution".to_string());
+                } else if megapixels < 0.3 {
+                    tags.push("low_resolution".to_string());
+                }
+
+                // Analyze color/hue histogram, brightness, and edge energy on a sampled grid
                 let mut total_brightness: u64 = 0;
+                let mut hue_counts: std::collections::HashMap<&'static str, u32> = std::collections::HashMap::new();
+                let mut grayscale_samples: u32 = 0;
+                let mut edge_energy: u64 = 0;
+                let mut edge_pairs: u32 = 0;
                 let sample_step = 10;
-                let mut samples = 0;
+                let mut samples: u64 = 0;
 
                 for y in (0..height).step_by(sample_step as usize) {
+                    let mut prev_brightness: Option<i64> = None;
                     for x in (0..width).step_by(sample_step as usize) {
                         let pixel = img.get_pixel(x, y);
                         let rgb = pixel.to_rgb();
-                        total_r += rgb[0] as u64;
-                        total_g += rgb[1] as u64;
-                        total_b += rgb[2] as u64;
-                        
+                        let (r, g, b) = (rgb[0], rgb[1], rgb[2]);
+
                         // Perceptual brightness formula
-                        let brightness = (0.299 * rgb[0] as f32 + 0.587 * rgb[1] as f32 + 0.114 * rgb[2] as f32) as u64;
-                        total_brightness += brightness;
+                        let brightness = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as i64;
+                        total_brightness += brightness as u64;
                         samples += 1;
+
+                        match Self::classify_hue(r, g, b) {
+                            Some(hue) => *hue_counts.entry(hue).or_insert(0) += 1,
+                            None => grayscale_samples += 1,
+                        }
+
+                        // Edge energy: squared brightness delta between horizontally adjacent samples
+                        if let Some(prev) = prev_brightness {
+                            let delta = brightness - prev;
+                            edge_energy += (delta * delta) as u64;
+                            edge_pairs += 1;
+                        }
+                        prev_brightness = Some(brightness);
                     }
                 }
 
-                    if samples > 0 {
-                        let avg_r = total_r.checked_div(samples).unwrap_or_default();
-                        let avg_g = total_g.checked_div(samples).unwrap_or_default();
-                        let avg_b = total_b.checked_div(samples).unwrap_or_default();
-                        let avg_brightness = total_brightness.checked_div(samples).unwrap_or_default();
+                if samples > 0 {
+                    let avg_brightness = total_brightness.checked_div(samples).unwrap_or_default();
 
                     // Tag based on brightness
                     if avg_brightness < 50 {
@@ -137,17 +162,70 @@ impl CvPipeline {
                         tags.push("indoor".to_string());
                     }
 
-                    // Tag based on dominant color channel
-                    if avg_g > avg_r && avg_g > avg_b && avg_g > 80 {
-                        tags.push("nature".to_string());
-                        tags.push("green".to_string());
-                    } else if avg_b > avg_r && avg_b > avg_g && avg_b > 80 {
-                        tags.push("sky".to_string());
-                        tags.push("blue".to_string());
-                    } else if avg_r > avg_g && avg_r > avg_b && avg_r > 150 && avg_g > 100 && avg_b < 80 {
-                        tags.push("sunset".to_string());
-                        tags.push("warm".to_string());
+                    // Tag based on sharpness: low variance in local brightness deltas means a blurry image
+                    if edge_pairs > 0 {
+                        let avg_edge_energy = edge_energy / edge_pairs as u64;
+                        if avg_edge_energy < 8 {
+                            tags.push("blurry".to_string());
+                        } else if avg_edge_energy > 400 {
+                            tags.push("sharp".to_string());
+                        }
                     }
+
+                    // Tag based on dominant hue(s) detected across sampled pixels
+                    if grayscale_samples as f32 / samples as f32 > 0.85 {
+                        tags.push("monochrome".to_string());
+                    } else if !hue_counts.is_empty() {
+                        let mut ranked: Vec<(&str, u32)> = hue_counts.into_iter().collect();
+                        ranked.sort_by(|a, b| b.1.cmp(&a.1));
+
+                        let dominant_hues: Vec<&str> = ranked
+                            .iter()
+                            .filter(|(_, count)| *count as f32 / samples as f32 > 0.12)
+                            .map(|(hue, _)| *hue)
+                            .collect();
+
+                        if dominant_hues.len() >= 3 {
+                            tags.push("colorful".to_string());
+                        }
+
+                        for hue in &dominant_hues {
+                            tags.push(hue.to_string());
+                        }
+
+                        // Higher-level semantic tags derived from the dominant hue + brightness
+                        if let Some(&top_hue) = dominant_hues.first() {
+                            match top_hue {
+                                "green" if avg_brightness > 60 => {
+                                    tags.push("nature".to_string());
+                                }
+                                "blue" if avg_brightness > 100 => {
+                                    tags.push("sky".to_string());
+                                }
+                                "orange" | "red" if avg_brightness > 60 && avg_brightness < 200 => {
+                                    tags.push("sunset".to_string());
+                                    tags.push("warm".to_string());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
+                // 5. Object/face/expression detection via local ONNX models
+                let vision = crate::detect::analyze(&img);
+                for tag in vision.object_tags {
+                    tags.push(tag);
+                }
+                if vision.face_count == 1 {
+                    tags.push("person".to_string());
+                    tags.push("face".to_string());
+                } else if vision.face_count > 1 {
+                    tags.push("people".to_string());
+                    tags.push("face".to_string());
+                }
+                if vision.smiling {
+                    tags.push("smile".to_string());
                 }
 
                 // Generate face embeddings / image similarities fingerprint
@@ -184,6 +262,47 @@ impl CvPipeline {
             latitude,
             longitude,
             date_created,
+        })
+    }
+
+    /// Classifies an RGB pixel into a coarse hue bucket, or `None` if it's too
+    /// desaturated/dark to reliably indicate a color (i.e. it's grayscale-ish).
+    fn classify_hue(r: u8, g: u8, b: u8) -> Option<&'static str> {
+        let r = r as f32 / 255.0;
+        let g = g as f32 / 255.0;
+        let b = b as f32 / 255.0;
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+        let value = max;
+        let saturation = if max == 0.0 { 0.0 } else { delta / max };
+
+        if saturation < 0.15 || value < 0.1 {
+            return None;
+        }
+
+        let mut hue = if delta == 0.0 {
+            0.0
+        } else if max == r {
+            60.0 * (((g - b) / delta).rem_euclid(6.0))
+        } else if max == g {
+            60.0 * (((b - r) / delta) + 2.0)
+        } else {
+            60.0 * (((r - g) / delta) + 4.0)
+        };
+        if hue < 0.0 {
+            hue += 360.0;
+        }
+
+        Some(match hue as u32 {
+            0..=15 | 346..=360 => "red",
+            16..=45 => "orange",
+            46..=70 => "yellow",
+            71..=170 => "green",
+            171..=200 => "cyan",
+            201..=255 => "blue",
+            256..=290 => "purple",
+            _ => "pink",
         })
     }
 
