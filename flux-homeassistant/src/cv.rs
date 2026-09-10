@@ -1,6 +1,6 @@
 use chrono::NaiveDateTime;
 use exif::{In, Reader, Tag, Value};
-use image::{GenericImageView, Pixel};
+use image::{imageops::FilterType, GenericImageView, Pixel};
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::Path;
@@ -152,7 +152,8 @@ impl CvPipeline {
 
                 // Generate face embeddings / image similarities fingerprint
                 // Let's create a 64-bit dHash of the image as a face / identity descriptor
-                let resized = img.thumbnail(9, 8).grayscale();
+                // `resize_exact` (not `thumbnail`, which preserves aspect ratio) guarantees a 9x8 output
+                let resized = img.resize_exact(9, 8, FilterType::Triangle).grayscale();
                 let mut hash: u64 = 0;
                 for y in 0..8 {
                     for x in 0..8 {
