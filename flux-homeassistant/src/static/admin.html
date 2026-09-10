@@ -95,7 +95,7 @@
 </head>
 <body>
 <header>
-  <h1>Flux Admin Dashboard</h1>
+  <h1>Flux Admin Dashboard <span class="muted" id="instance-name-header"></span></h1>
   <span id="cloud-badge" class="badge"><span class="dot" id="cloud-dot"></span><span id="cloud-text">Unknown</span></span>
 </header>
 <main>
@@ -115,6 +115,35 @@
     </div>
     <div class="muted">This instance keeps an outbound WebSocket tunnel open to the cloud relay for remote access, using the instance ID and tunnel token issued when it was registered via <code>/api/auth/register</code>. It can also be reached directly on the local network (e.g. <code>http://homeassistant.local:8080/</code>) using the same account credentials via the SDK's local (LAN) mode.</div>
     <div class="error" id="cloud-error"></div>
+  </section>
+
+  <section class="panel" id="instance-panel" style="display:none;">
+    <div class="toolbar">
+      <strong>Instance</strong>
+      <button class="secondary" id="instance-refresh-btn">Refresh</button>
+    </div>
+    <div class="muted">The instance name is shown to anyone whose account is tied to it (e.g. "Smith House").</div>
+    <div class="toolbar" style="margin-top:10px;">
+      <input type="text" id="instance-name-input" placeholder="Instance name" size="30" />
+      <button id="instance-rename-btn">Save name</button>
+    </div>
+    <div class="error" id="instance-name-error"></div>
+
+    <div class="toolbar" style="margin-top:16px;">
+      <strong>Members</strong>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Email</th><th>Status</th><th>Invited</th></tr>
+      </thead>
+      <tbody id="members-body"></tbody>
+    </table>
+    <div class="toolbar" style="margin-top:10px;">
+      <input type="text" id="invite-email-input" placeholder="Email address" size="30" />
+      <button id="invite-btn">Add / Invite</button>
+    </div>
+    <div class="muted">Entering an email that's already registered ties them to this instance immediately. Otherwise, an invite is sent (placeholder — no email service is linked yet) and they're tied to this instance as soon as they register.</div>
+    <div class="error" id="members-error"></div>
   </section>
 
   <section class="panel" id="users-panel" style="display:none;">
@@ -147,6 +176,13 @@
   const cloudText = el('cloud-text');
   const cloudPanel = el('cloud-panel');
   const cloudError = el('cloud-error');
+  const instancePanel = el('instance-panel');
+  const instanceNameHeader = el('instance-name-header');
+  const instanceNameInput = el('instance-name-input');
+  const instanceNameError = el('instance-name-error');
+  const membersBody = el('members-body');
+  const membersError = el('members-error');
+  const inviteEmailInput = el('invite-email-input');
 
   if (state.token) tokenInput.value = state.token;
 
@@ -175,6 +211,7 @@
       usersPanel.style.display = 'block';
       cloudPanel.style.display = 'block';
       localStorage.setItem('flux_admin_token', state.token);
+      loadInstance();
     } catch (err) {
       loginError.textContent = err.message;
       usersPanel.style.display = 'none';
@@ -318,6 +355,76 @@
   });
   el('refresh-btn').addEventListener('click', loadUsers);
   el('cloud-refresh-btn').addEventListener('click', loadUsers);
+
+  async function loadInstance() {
+    membersError.textContent = '';
+    try {
+      const res = await fetch('api/admin/instance', { headers: authHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.success) {
+        throw new Error(body.message || ('Request failed with status ' + res.status));
+      }
+      instancePanel.style.display = 'block';
+      instanceNameHeader.textContent = body.data.label ? ('— ' + body.data.label) : '';
+      instanceNameInput.value = body.data.label || '';
+      renderMembers(body.data.members || []);
+    } catch (err) {
+      instancePanel.style.display = 'none';
+      membersError.textContent = err.message;
+    }
+  }
+
+  function renderMembers(members) {
+    membersBody.innerHTML = '';
+    for (const member of members) {
+      const row = document.createElement('tr');
+      row.innerHTML =
+        '<td>' + escapeHtml(member.email) + '</td>' +
+        '<td>' + (member.joined ? 'Joined' : 'Invited (pending)') + '</td>' +
+        '<td>' + escapeHtml(formatDate(member.invitedAt)) + '</td>';
+      membersBody.appendChild(row);
+    }
+  }
+
+  el('instance-rename-btn').addEventListener('click', async () => {
+    instanceNameError.textContent = '';
+    const label = instanceNameInput.value.trim();
+    try {
+      const res = await fetch('api/admin/instance', {
+        method: 'PUT',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({ label }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.success) {
+        throw new Error(body.message || ('Request failed with status ' + res.status));
+      }
+      instanceNameHeader.textContent = body.data.label ? ('— ' + body.data.label) : '';
+    } catch (err) {
+      instanceNameError.textContent = err.message;
+    }
+  });
+
+  el('invite-btn').addEventListener('click', async () => {
+    membersError.textContent = '';
+    const email = inviteEmailInput.value.trim();
+    try {
+      const res = await fetch('api/admin/instance/members', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({ email }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.success) {
+        throw new Error(body.message || ('Request failed with status ' + res.status));
+      }
+      inviteEmailInput.value = '';
+      loadInstance();
+    } catch (err) {
+      membersError.textContent = err.message;
+    }
+  });
+  el('instance-refresh-btn').addEventListener('click', loadInstance);
 
   // Always attempt an initial load: when opened via Home Assistant Ingress, the server trusts
   // the request without a token; otherwise this silently falls back to the login prompt.

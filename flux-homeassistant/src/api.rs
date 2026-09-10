@@ -166,6 +166,8 @@ pub fn create_router(state: AppState) -> axum::Router {
         // Admin dashboard endpoints
         .route("/api/admin/users", get(list_admin_users))
         .route("/api/admin/browse", get(browse_user_files))
+        .route("/api/admin/instance", get(get_instance_info).put(rename_instance))
+        .route("/api/admin/instance/members", post(invite_instance_member))
         // Only reachable at root, via Home Assistant Ingress (no standalone /ui path anymore).
         .route("/", get(serve_admin_ui))
         .layer(CorsLayer::permissive())
@@ -1032,6 +1034,138 @@ async fn browse_user_files(
         relative_path,
         entries,
     }))
+}
+
+// ==========================================
+// Cloud instance management (name + members), proxied via this instance's own tunnel token
+// ==========================================
+
+#[derive(Deserialize)]
+pub struct RenameInstanceRequest {
+    pub label: String,
+}
+
+#[derive(Deserialize)]
+pub struct InviteMemberRequest {
+    pub email: String,
+}
+
+/// Reads this instance's cloud relay credentials, or an error response if not yet registered.
+fn cloud_credentials(state: &AppState) -> Result<(String, String), (StatusCode, Json<ApiResponse<()>>)> {
+    let config = state.config_manager.get_config();
+    let instance_id = config.instance_id.filter(|v| !v.trim().is_empty());
+    let token = config.websocket_token.filter(|v| !v.trim().is_empty());
+    match (instance_id, token) {
+        (Some(instance_id), Some(token)) => Ok((instance_id, token)),
+        _ => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse {
+                success: false,
+                message: "Cloud relay is not configured for this instance yet".to_string(),
+                data: None,
+            }),
+        )),
+    }
+}
+
+fn cloud_unreachable(e: reqwest::Error) -> (StatusCode, Json<ApiResponse<()>>) {
+    warn!("Cloud relay request failed: {}", e);
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(ApiResponse {
+            success: false,
+            message: format!("Failed to reach cloud relay: {}", e),
+            data: None,
+        }),
+    )
+}
+
+/// Passes a cloud relay JSON response straight through, preserving its status code and body.
+async fn forward_cloud_json(resp: reqwest::Response) -> axum::response::Response {
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    match resp.json::<serde_json::Value>().await {
+        Ok(body) => (status, Json(body)).into_response(),
+        Err(_) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiResponse::<()> {
+                success: false,
+                message: "Invalid response from cloud relay".to_string(),
+                data: None,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_instance_info(headers: HeaderMap, State(state): State<AppState>) -> axum::response::Response {
+    if let Err(err) = require_admin(&headers, &state).await {
+        return err.into_response();
+    }
+    let (instance_id, token) = match cloud_credentials(&state) {
+        Ok(v) => v,
+        Err(err) => return err.into_response(),
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/instances/{}", crate::definitions::CLOUD_URL, instance_id);
+    match client.get(&url).bearer_auth(&token).send().await {
+        Ok(resp) => forward_cloud_json(resp).await,
+        Err(e) => cloud_unreachable(e).into_response(),
+    }
+}
+
+async fn rename_instance(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<RenameInstanceRequest>,
+) -> axum::response::Response {
+    if let Err(err) = require_admin(&headers, &state).await {
+        return err.into_response();
+    }
+    let (instance_id, token) = match cloud_credentials(&state) {
+        Ok(v) => v,
+        Err(err) => return err.into_response(),
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/instances/{}/label", crate::definitions::CLOUD_URL, instance_id);
+    match client
+        .put(&url)
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "label": payload.label }))
+        .send()
+        .await
+    {
+        Ok(resp) => forward_cloud_json(resp).await,
+        Err(e) => cloud_unreachable(e).into_response(),
+    }
+}
+
+async fn invite_instance_member(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<InviteMemberRequest>,
+) -> axum::response::Response {
+    if let Err(err) = require_admin(&headers, &state).await {
+        return err.into_response();
+    }
+    let (instance_id, token) = match cloud_credentials(&state) {
+        Ok(v) => v,
+        Err(err) => return err.into_response(),
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/instances/{}/members", crate::definitions::CLOUD_URL, instance_id);
+    match client
+        .post(&url)
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "email": payload.email }))
+        .send()
+        .await
+    {
+        Ok(resp) => forward_cloud_json(resp).await,
+        Err(e) => cloud_unreachable(e).into_response(),
+    }
 }
 
 async fn serve_admin_ui(headers: HeaderMap) -> Result<Html<&'static str>, StatusCode> {

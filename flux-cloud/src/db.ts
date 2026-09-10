@@ -92,4 +92,27 @@ export async function migrate(pool: Pool): Promise<void> {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id);
   `);
+
+  // Members allow multiple end-user accounts to be tied to a single instance (e.g. a
+  // household), separately from the single owning user in instances.user_id. An email can
+  // only ever be tied to one instance (enforced by the unique index), whether pending
+  // (joined_at IS NULL, invited but not yet registered) or joined.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS instance_members (
+      id SERIAL PRIMARY KEY,
+      instance_id TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      invited_email TEXT NOT NULL,
+      invited_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      joined_at TIMESTAMPTZ
+    );
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS instance_members_email_idx ON instance_members (invited_email);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS instance_members_instance_id_idx ON instance_members (instance_id);
+  `);
 }

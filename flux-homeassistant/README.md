@@ -12,6 +12,9 @@ The admin dashboard is only exposed through Home Assistant's Ingress: use the **
 
 - `GET /api/admin/users`: admin-only, returns the account list (with per-user storage usage) plus the live cloud connection state.
 - `GET /api/admin/browse?user=<name>&path=<relative>`: admin-only, lists files/folders inside a user's workspace, sandboxed to that user's root directory.
+- `GET /api/admin/instance`: admin-only, returns this instance's cloud-side name and member list (proxied to flux-cloud via the instance's tunnel token).
+- `PUT /api/admin/instance` `{ label }`: admin-only, renames the instance (e.g. "Smith House") so members can see which instance they're connected to.
+- `POST /api/admin/instance/members` `{ email }`: admin-only, ties an email to this instance — if it's already registered it's assigned immediately, otherwise a placeholder invite is issued and it's assigned automatically as soon as that email registers. An email can only be tied to one instance at a time.
 
 ## Local vs. cloud access
 

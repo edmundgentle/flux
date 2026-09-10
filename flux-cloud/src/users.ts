@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import { getPool, migrate } from './db';
 import { hashPassword, verifyPassword, generateToken, hashToken, verifyTokenHash, generateInstanceId } from './security';
+import { sendInviteEmail } from './email';
 
 export type InstanceSummary = {
   instanceId: string;
@@ -9,8 +10,19 @@ export type InstanceSummary = {
 };
 
 export type RegisteredInstance = InstanceSummary & {
-  tunnelToken: string;
+  tunnelToken?: string;
   accessToken: string;
+};
+
+export type InstanceMember = {
+  email: string;
+  joined: boolean;
+  invitedAt: string;
+  joinedAt: string | null;
+};
+
+export type InviteOutcome = {
+  status: 'invited' | 'joined' | 'already_member';
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -44,9 +56,6 @@ export class UserStore {
     }
 
     const passwordHash = hashPassword(password);
-    const instanceId = generateInstanceId();
-    const token = generateToken();
-    const instanceLabel = label?.trim() || normalizedEmail;
 
     const client = await this.pool.connect();
     try {
@@ -57,10 +66,43 @@ export class UserStore {
       );
       const userId = userResult.rows[0].id;
 
-      await client.query(
-        'INSERT INTO instances (instance_id, user_id, token_hash, label) VALUES ($1, $2, $3, $4)',
-        [instanceId, userId, hashToken(token), instanceLabel]
+      // If this email was invited to an existing instance, join it instead of provisioning a
+      // brand new one.
+      const inviteResult = await client.query<{ instance_id: string; label: string }>(
+        `SELECT instances.instance_id, instances.label
+         FROM instance_members
+         JOIN instances ON instances.instance_id = instance_members.instance_id
+         WHERE instance_members.invited_email = $1 AND instance_members.joined_at IS NULL
+         FOR UPDATE OF instance_members`,
+        [normalizedEmail]
       );
+      const pendingInvite = inviteResult.rows[0];
+
+      let instanceId: string;
+      let instanceLabel: string;
+      let tunnelToken: string | undefined;
+
+      if (pendingInvite) {
+        instanceId = pendingInvite.instance_id;
+        instanceLabel = pendingInvite.label;
+        await client.query(
+          'UPDATE instance_members SET user_id = $1, joined_at = now() WHERE instance_id = $2 AND invited_email = $3',
+          [userId, instanceId, normalizedEmail]
+        );
+      } else {
+        instanceId = generateInstanceId();
+        const token = generateToken();
+        tunnelToken = token;
+        instanceLabel = label?.trim() || normalizedEmail;
+        await client.query(
+          'INSERT INTO instances (instance_id, user_id, token_hash, label) VALUES ($1, $2, $3, $4)',
+          [instanceId, userId, hashToken(token), instanceLabel]
+        );
+        await client.query(
+          'INSERT INTO instance_members (instance_id, user_id, invited_email, joined_at) VALUES ($1, $2, $3, now())',
+          [instanceId, userId, normalizedEmail]
+        );
+      }
 
       const accessToken = generateToken();
       await client.query(
@@ -69,7 +111,7 @@ export class UserStore {
       );
 
       await client.query('COMMIT');
-      return { instanceId, tunnelToken: token, accessToken, label: instanceLabel };
+      return { instanceId, tunnelToken, accessToken, label: instanceLabel };
     } catch (error) {
       await client.query('ROLLBACK');
       if (error instanceof Error && /unique/i.test(error.message)) {
@@ -157,6 +199,100 @@ export class UserStore {
     const row = result.rows[0];
     if (!row) return false;
     return verifyTokenHash(token, row.token_hash);
+  }
+
+  /** Returns an instance's display label, shown to its members (e.g. "Smith House"). */
+  async getInstanceLabel(instanceId: string): Promise<string | undefined> {
+    const result = await this.pool.query<{ label: string }>(
+      'SELECT label FROM instances WHERE instance_id = $1',
+      [instanceId]
+    );
+    return result.rows[0]?.label;
+  }
+
+  async renameInstance(instanceId: string, label: string): Promise<string> {
+    const trimmed = label.trim().slice(0, 128);
+    if (!trimmed) {
+      throw new Error('Instance name cannot be empty');
+    }
+    const result = await this.pool.query(
+      'UPDATE instances SET label = $1 WHERE instance_id = $2',
+      [trimmed, instanceId]
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      throw new Error('Instance not found');
+    }
+    return trimmed;
+  }
+
+  async listMembers(instanceId: string): Promise<InstanceMember[]> {
+    const result = await this.pool.query<{ invited_email: string; invited_at: string; joined_at: string | null }>(
+      'SELECT invited_email, invited_at, joined_at FROM instance_members WHERE instance_id = $1 ORDER BY invited_at ASC',
+      [instanceId]
+    );
+    return result.rows.map((row) => ({
+      email: row.invited_email,
+      joined: row.joined_at !== null,
+      invitedAt: row.invited_at,
+      joinedAt: row.joined_at,
+    }));
+  }
+
+  /**
+   * Ties an email to this instance: assigns it immediately if the email already has a
+   * registered account, otherwise records a pending invite and sends an invite email. An
+   * email can only ever be tied to one instance, whether pending or joined.
+   */
+  async inviteOrAssignMember(instanceId: string, email: string): Promise<InviteOutcome> {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!EMAIL_RE.test(normalizedEmail)) {
+      throw new Error('Invalid email address');
+    }
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existing = await client.query<{ instance_id: string }>(
+        'SELECT instance_id FROM instance_members WHERE invited_email = $1 FOR UPDATE',
+        [normalizedEmail]
+      );
+      const existingRow = existing.rows[0];
+      if (existingRow) {
+        await client.query('ROLLBACK');
+        if (existingRow.instance_id !== instanceId) {
+          throw new Error('This email is already tied to a different instance');
+        }
+        return { status: 'already_member' };
+      }
+
+      const userResult = await client.query<{ id: number }>(
+        'SELECT id FROM users WHERE email = $1',
+        [normalizedEmail]
+      );
+      const existingUser = userResult.rows[0];
+
+      await client.query(
+        `INSERT INTO instance_members (instance_id, user_id, invited_email, joined_at)
+         VALUES ($1, $2, $3, $4)`,
+        [instanceId, existingUser?.id ?? null, normalizedEmail, existingUser ? new Date() : null]
+      );
+
+      await client.query('COMMIT');
+
+      if (existingUser) {
+        return { status: 'joined' };
+      }
+
+      const label = (await this.getInstanceLabel(instanceId)) || 'Flux instance';
+      await sendInviteEmail({ to: normalizedEmail, instanceLabel: label });
+      return { status: 'invited' };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async verifyAccessToken(instanceId: string, token: string): Promise<boolean> {

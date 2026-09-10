@@ -87,6 +87,19 @@ const requireAccessToken = async (req: express.Request, res: express.Response, n
   next();
 };
 
+// Authenticates the instance itself (e.g. the Home Assistant add-on) using its tunnel token,
+// for endpoints that manage the instance rather than acting as one of its users.
+const requireInstanceToken = async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
+  const instanceId = String(req.params.instanceId || '');
+  const authorization = req.header('authorization');
+  const token = authorization?.replace(/^Bearer\s+/i, '');
+  if (!instanceId || !token || !(await userStore.verifyToken(instanceId, token))) {
+    res.status(401).json({ success: false, message: 'Missing or invalid instance token' });
+    return;
+  }
+  next();
+};
+
 app.post('/api/auth/ws-ticket', authRateLimit, requireAccessToken, (req, res) => {
   const ticket = crypto.randomBytes(32).toString('hex');
   wsTickets.set(ticket, { instanceId: res.locals.instanceId, user: res.locals.user, expiresAt: Date.now() + 60_000 });
@@ -244,6 +257,52 @@ app.post('/api/instances/provision', provisionRateLimit, async (req, res) => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Provisioning failed';
+    res.status(400).json({ success: false, message });
+  }
+});
+
+app.get('/api/instances/:instanceId', requireInstanceToken, async (req, res) => {
+  const instanceId = String(req.params.instanceId);
+  try {
+    const label = await userStore.getInstanceLabel(instanceId);
+    if (!label) {
+      res.status(404).json({ success: false, message: 'Instance not found' });
+      return;
+    }
+    const members = await userStore.listMembers(instanceId);
+    res.json({ success: true, data: { instanceId, label, members } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to load instance';
+    res.status(400).json({ success: false, message });
+  }
+});
+
+app.put('/api/instances/:instanceId/label', authRateLimit, requireInstanceToken, async (req, res) => {
+  const { label } = req.body ?? {};
+  if (typeof label !== 'string') {
+    res.status(400).json({ success: false, message: 'label is required' });
+    return;
+  }
+  try {
+    const savedLabel = await userStore.renameInstance(String(req.params.instanceId), label);
+    res.json({ success: true, data: { label: savedLabel } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to rename instance';
+    res.status(400).json({ success: false, message });
+  }
+});
+
+app.post('/api/instances/:instanceId/members', authRateLimit, requireInstanceToken, async (req, res) => {
+  const { email } = req.body ?? {};
+  if (typeof email !== 'string') {
+    res.status(400).json({ success: false, message: 'email is required' });
+    return;
+  }
+  try {
+    const outcome = await userStore.inviteOrAssignMember(String(req.params.instanceId), email);
+    res.status(outcome.status === 'invited' ? 201 : 200).json({ success: true, data: outcome });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to add member';
     res.status(400).json({ success: false, message });
   }
 });
