@@ -1,4 +1,3 @@
 node_modules
 target/
-flux-homeassistant/models/*.onnx
 

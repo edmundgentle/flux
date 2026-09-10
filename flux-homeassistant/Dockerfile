@@ -13,8 +13,6 @@ RUN apt-get update && apt-get install -y \
     git \
     clang \
     curl \
-    python3 \
-    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/app
@@ -40,13 +38,11 @@ RUN rm -f target/release/flux-homeassistant target/release/deps/flux_homeassista
 # Build the release binary (ort statically links its own onnxruntime binary at this step)
 RUN cargo build --release
 
-# Fetch/export the ONNX models used for offline object/face detection and facial fingerprinting.
-# yolov8n.onnx is exported automatically via the `ultralytics` pip package; yolov8n-face.onnx and
-# facenet512.onnx must be supplied manually (see models/download-models.sh) since there's no
-# single stable official direct-download URL for them — the pipeline degrades gracefully
-# (skips just the affected feature) if they're absent.
+# The ONNX models used for offline object/face detection and facial fingerprinting are committed
+# to the repo (see models/download-models.sh / models/export_facenet_onnx.py to regenerate them) —
+# they're just copied in here rather than fetched/exported at build time, since builds may run
+# without reliable network/Python access (e.g. cross-arch HA add-on builds under QEMU).
 COPY models ./models
-RUN sh models/download-models.sh
 
 # ==========================================
 # 2. Runner Stage

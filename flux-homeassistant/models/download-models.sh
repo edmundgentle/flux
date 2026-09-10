@@ -1,7 +1,8 @@
 #!/bin/sh
 # Downloads/exports the pretrained ONNX models used by src/detect.rs for offline object/face
-# detection and facial fingerprinting. Run this once for local development (`cargo test`/
-# `cargo run` read models from ./models by default); the Docker build runs it automatically.
+# detection and facial fingerprinting. The resulting .onnx files are committed to the repo and
+# just copied in by the Dockerfile, so this script is only needed once locally (initial setup,
+# or to regenerate a model) — it is NOT run as part of the Docker build.
 set -eu
 
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
