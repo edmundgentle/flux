@@ -165,6 +165,8 @@ impl FileManager {
             allowed_users,
         };
 
+        info!("Indexed data for {:?}: {:#?}", file_path, doc);
+
         search_manager.index_document(doc)?;
         Ok(())
     }
