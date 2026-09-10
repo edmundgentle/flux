@@ -1,7 +1,10 @@
 # ==========================================
 # 1. Builder Stage
 # ==========================================
-FROM rust:1.88-slim-bookworm AS builder
+# Trixie (not bookworm) is required: ort's prebuilt static onnxruntime library needs a
+# newer libstdc++ ABI than bookworm's GCC 12 ships (otherwise linking fails with
+# "undefined reference to `__cxa_call_terminate'" / `_M_replace_cold` errors).
+FROM rust:1.88-slim-trixie AS builder
 
 # Install system build dependencies
 RUN apt-get update && apt-get install -y \
@@ -42,7 +45,9 @@ RUN sh models/download-models.sh
 # ==========================================
 # 2. Runner Stage
 # ==========================================
-FROM debian:bookworm-slim
+# Must match the builder's Debian release so the runtime libstdc++/glibc are new enough
+# for the binary produced above.
+FROM debian:trixie-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
