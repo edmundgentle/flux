@@ -15,6 +15,7 @@ export declare class FluxClient {
     private storageKey;
     private networkMonitor;
     private isOnLocalNetwork;
+    private localSessionExchange;
     /** Which transport actually served the most recent (or currently in-flight) request. */
     private activeTransport;
     /** Resolves once any previously persisted session has been restored from storage. */
@@ -31,6 +32,7 @@ export declare class FluxClient {
     /** Whether the local instance should be tried before the cloud, based on known credentials and network status. */
     private shouldPreferLocal;
     private preferredTransport;
+    private ensureLocalSession;
     /**
      * Runs `localCall` against the local Home Assistant instance first when it looks reachable,
      * falling back to `cloudCall` (the cloud relay) if the local attempt fails or isn't available.
@@ -52,6 +54,11 @@ export declare class FluxClient {
      * against the instance's local API.
      */
     loginLocal(baseUrl: string, credentials: AuthCredentials): Promise<void>;
+    /**
+     * Exchanges the active cloud session for a short-lived local token through the authenticated
+     * relay tunnel. The token is then used only for requests directly to `baseUrl`.
+     */
+    exchangeCloudSessionForLocal(baseUrl: string): Promise<void>;
     logout(): Promise<void>;
     private authenticate;
     connect(): Promise<void>;

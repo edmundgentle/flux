@@ -106,6 +106,10 @@ app.post('/api/auth/ws-ticket', authRateLimit, requireAccessToken, (req, res) =>
   res.json({ success: true, data: { ticket } });
 });
 
+// The relay signs the authenticated cloud user before forwarding this to the instance.
+// The local token never becomes a cloud credential and is only used for LAN requests.
+app.post('/api/auth/local-session', authRateLimit, requireAccessToken, proxyToInstance);
+
 const ticketCleanup = setInterval(() => {
   const now = Date.now();
   for (const [ticket, entry] of wsTickets) {

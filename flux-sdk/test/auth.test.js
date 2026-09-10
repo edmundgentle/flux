@@ -55,6 +55,30 @@ test('login stores the returned auth token', async () => {
   assert.equal(client.getAuthSession()?.token, 'def456');
 });
 
+test('exchanges the cloud session for a local-only token', async () => {
+  const calls = [];
+  const client = new FluxClient({
+    relayUrl: 'https://relay.test',
+    instanceId: 'instance-a',
+    accessToken: 'cloud-token',
+    autoConnect: false,
+    fetchImpl: async (input, init) => {
+      calls.push({ url: String(input), headers: init?.headers });
+      return createJsonResponse({ success: true, data: { user: 'alice', token: 'local-token' } });
+    },
+  });
+
+  await client.exchangeCloudSessionForLocal('http://homeassistant.local:8080');
+
+  assert.equal(calls[0].url, 'https://relay.test/api/auth/local-session');
+  assert.deepEqual(calls[0].headers, {
+    'Content-Type': 'application/json',
+    Authorization: 'Bearer cloud-token',
+    'x-instance-id': 'instance-a',
+  });
+  assert.equal(client.getTransportMode(), 'local');
+});
+
 test('download decodes the relay file envelope into a Blob', async () => {
   const client = new FluxClient({
     relayUrl: 'https://relay.test',

@@ -275,6 +275,12 @@ impl WebSocketBridge {
         }
 
         match request.method.to_ascii_uppercase().as_str() {
+            "POST" if request.path == "/api/auth/local-session" => {
+                match account_manager.create_cloud_session(&user) {
+                    Ok(session) => json!({ "status": 200, "body": { "success": true, "data": session } }),
+                    Err(_) => json!({ "status": 500, "body": { "success": false, "message": "Could not create a local cloud session" } }),
+                }
+            }
             "GET" if request.path.starts_with("/api/search") => {
                 let q = query.get("q").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let limit = query.get("limit").and_then(|v| v.as_str()).and_then(|s| s.parse::<usize>().ok())

@@ -45,7 +45,7 @@ The client always talks to the built-in Flux cloud relay URL; it is fixed and ca
 
 ## Local-first routing
 
-Once you've signed in to a local instance with `client.loginLocal(baseUrl, credentials)`, every request (`search`, `uploadFile`, `downloadFile`, `getConfig`) automatically prefers the local network connection and only falls back to the cloud relay if the local request fails or the instance isn't reachable. `client.getTransportMode()` returns `'local'` or `'relay'` to reflect whichever path served the most recent request.
+After cloud sign-in, every request (`search`, `uploadFile`, `downloadFile`, `getConfig`) automatically probes the default local address (`http://homeassistant.local:8080`). When it is reachable, the SDK exchanges the cloud session for a short-lived local token and prefers the local network connection. Otherwise, it immediately uses the cloud relay. `client.getTransportMode()` returns `'local'` or `'relay'` to reflect whichever path served the most recent request.
 
 To avoid a slow timeout when you already know the device is off the home network (e.g. on cellular data), pass a `networkMonitor` so the SDK can skip the local attempt entirely:
 
@@ -71,4 +71,4 @@ const client = new FluxClient({
 
 Users with multiple instances can pass `instanceId` to `login` to select one explicitly.
 
-For direct LAN requests, call `client.loginLocal(baseUrl, credentials)` (e.g. `client.loginLocal('http://homeassistant.local:8080', { username, password })`) with the *same* username/password used for the cloud account. This signs in directly against the Home Assistant instance on the local network and switches the client into LAN transport mode. The cloud relay session and the local session are independent under the hood, so `loginLocal` performs its own request, but both use the same user-supplied credentials — you do not need separate logins for cloud vs. local use.
+`client.loginLocal(baseUrl, credentials)` remains available when an app needs to target a non-default local address or use local-only authentication.

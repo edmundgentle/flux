@@ -264,6 +264,39 @@ impl AccountManager {
         })
     }
 
+    pub fn create_cloud_session(&self, username: &str) -> Result<LoginResponse, String> {
+        let normalized = Self::normalize_username(username);
+        {
+            let mut accounts_guard = self.accounts.write().unwrap();
+            if !accounts_guard.contains_key(&normalized) {
+                let account = Account {
+                    username: normalized.clone(),
+                    password_hash: Self::hash_password(&Uuid::new_v4().to_string())?,
+                    display_name: None,
+                    role: "user".to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                accounts_guard.insert(normalized.clone(), account);
+            }
+        }
+        self.ensure_user_workspace(&normalized)?;
+        self.save_accounts()?;
+
+        let token = Uuid::new_v4().to_string();
+        let session = Session {
+            username: normalized.clone(),
+            token_hash: Self::hash_token(&token),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: (chrono::Utc::now() + chrono::Duration::minutes(15)).to_rfc3339(),
+        };
+        {
+            let mut sessions_guard = self.sessions.write().unwrap();
+            sessions_guard.insert(session.token_hash.clone(), session);
+        }
+        self.save_sessions()?;
+        Ok(LoginResponse { user: normalized, token })
+    }
+
     pub fn authenticate_token(&self, token: &str) -> Option<String> {
         let mut sessions_guard = self.sessions.write().unwrap();
         let now = chrono::Utc::now();
@@ -354,6 +387,18 @@ mod tests {
 
         assert_eq!(response.user, "alice");
         assert!(manager.authenticate_token(&response.token).is_some());
+    }
+
+    #[test]
+    fn cloud_session_creates_a_local_account() {
+        let dir = tempdir().unwrap();
+        let manager = AccountManager::new(dir.path().to_str().unwrap());
+
+        let response = manager.create_cloud_session("alice@example.com").unwrap();
+        assert_eq!(response.user, "alice@example.com");
+        assert!(manager.authenticate_token(&response.token).is_some());
+        assert!(manager.list_accounts().iter().any(|account| account.username == "alice@example.com"));
+        assert!(dir.path().join("alice@example.com").join("Photos").exists());
     }
 
     #[test]

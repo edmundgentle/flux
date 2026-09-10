@@ -146,6 +146,7 @@ pub struct ApiResponse<T> {
 
 pub fn create_router(state: AppState) -> axum::Router {
     axum::Router::new()
+        .route("/health", get(health_check))
         // Storage endpoints
         .route("/api/storage/mounts", get(list_mounts))
         .route("/api/storage/scan", get(scan_directory))
@@ -178,6 +179,10 @@ pub fn create_router(state: AppState) -> axum::Router {
 // ==========================================
 // Helper functions
 // ==========================================
+
+async fn health_check() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true }))
+}
 
 /// Extracts active user from headers, query parameters, or an auth token.
 fn get_request_user(

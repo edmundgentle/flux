@@ -51,6 +51,102 @@ test('favours the local instance when it is reachable', async () => {
   assert.equal(client.getTransportMode(), 'local');
 });
 
+test('automatically exchanges a cloud session for a reachable local instance', async () => {
+  const calls = [];
+  const client = new FluxClient({
+    relayUrl: 'https://relay.test',
+    instanceId: 'instance-a',
+    accessToken: 'cloud-token',
+    autoConnect: false,
+    fetchImpl: async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === 'http://homeassistant.local:8080/health') {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === 'https://relay.test/api/auth/local-session') {
+        return new Response(JSON.stringify({ success: true, data: { token: 'local-token' } }), { status: 200 });
+      }
+      if (url === 'http://homeassistant.local:8080/api/config') {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  const result = await client.getConfig();
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(calls, [
+    'http://homeassistant.local:8080/health',
+    'https://relay.test/api/auth/local-session',
+    'http://homeassistant.local:8080/api/config',
+  ]);
+  assert.equal(client.getTransportMode(), 'local');
+});
+
+test('automatically falls back to cloud when the default local instance is unavailable', async () => {
+  const calls = [];
+  const client = new FluxClient({
+    relayUrl: 'https://relay.test',
+    instanceId: 'instance-a',
+    accessToken: 'cloud-token',
+    autoConnect: false,
+    fetchImpl: async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === 'http://homeassistant.local:8080/health') throw new Error('unreachable');
+      if (url === 'https://relay.test/api/config') {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  const result = await client.getConfig();
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(calls, [
+    'http://homeassistant.local:8080/health',
+    'https://relay.test/api/config',
+  ]);
+  assert.equal(client.getTransportMode(), 'relay');
+});
+
+test('renews an expired local token before falling back to cloud', async () => {
+  const calls = [];
+  const client = new FluxClient(baseConfig({
+    fetchImpl: async (input, init) => {
+      const url = String(input);
+      calls.push({ url, authorization: init?.headers?.Authorization });
+      if (url === 'http://homeassistant.local:8080/api/config' && init?.headers?.Authorization === 'Bearer local-token') {
+        return new Response('expired', { status: 401 });
+      }
+      if (url === 'http://homeassistant.local:8080/health') {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === 'https://relay.test/api/auth/local-session') {
+        return new Response(JSON.stringify({ success: true, data: { token: 'renewed-local-token' } }), { status: 200 });
+      }
+      if (url === 'http://homeassistant.local:8080/api/config' && init?.headers?.Authorization === 'Bearer renewed-local-token') {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  }));
+
+  const result = await client.getConfig();
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(calls.map((call) => call.url), [
+    'http://homeassistant.local:8080/api/config',
+    'http://homeassistant.local:8080/health',
+    'https://relay.test/api/auth/local-session',
+    'http://homeassistant.local:8080/api/config',
+  ]);
+  assert.equal(client.getTransportMode(), 'local');
+});
+
 test('falls back to the cloud relay when the local instance request fails', async () => {
   const calls = [];
   const client = new FluxClient(baseConfig({
@@ -67,7 +163,8 @@ test('falls back to the cloud relay when the local instance request fails', asyn
   const result = await client.getConfig();
 
   assert.deepEqual(result, { ok: true });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
+  assert.match(calls[1], /^http:\/\/homeassistant\.local:8080\/health/);
   assert.equal(client.getTransportMode(), 'relay');
 });
 

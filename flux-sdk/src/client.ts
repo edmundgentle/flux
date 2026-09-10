@@ -5,6 +5,7 @@ import { buildRelaySocketUrl, getMimeType, sleep, uuid, safeJsonParse } from './
 export const FLUX_CLOUD_URL = 'https://flux-relay-fvnyy.ondigitalocean.app';
 
 const DEFAULT_STORAGE_KEY = 'flux.auth.session';
+const DEFAULT_LOCAL_BASE_URL = 'http://homeassistant.local:8080';
 
 type PersistedAuthState = {
   session?: AuthSession;
@@ -43,6 +44,7 @@ export class FluxClient {
   private storageKey: string;
   private networkMonitor: NetworkMonitor | null;
   private isOnLocalNetwork: boolean | null = null;
+  private localSessionExchange: Promise<void> | null = null;
   /** Which transport actually served the most recent (or currently in-flight) request. */
   private activeTransport: TransportMode = 'relay';
 
@@ -131,12 +133,43 @@ export class FluxClient {
     return this.shouldPreferLocal() ? 'local' : 'relay';
   }
 
+  private async ensureLocalSession(): Promise<void> {
+    if (this.hasLocalCredentials() || this.isOnLocalNetwork === false || !this.config.instanceId || !(this.authSession?.token || this.config.accessToken)) return;
+    if (this.localSessionExchange) return await this.localSessionExchange;
+
+    const baseUrl = this.config.localBaseUrl || DEFAULT_LOCAL_BASE_URL;
+    this.localSessionExchange = (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 1500);
+      try {
+        const response = await this.fetchImpl(new URL('/health', baseUrl), { signal: controller.signal });
+        if (!response.ok) return;
+      } catch {
+        this.diagnostic('info', 'transport.local.unavailable', `Local instance is not reachable at ${baseUrl}`);
+        return;
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      try {
+        await this.exchangeCloudSessionForLocal(baseUrl);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Local session exchange failed';
+        this.diagnostic('warn', 'transport.local.exchange.failed', message);
+      }
+    })().finally(() => {
+      this.localSessionExchange = null;
+    });
+    await this.localSessionExchange;
+  }
+
   /**
    * Runs `localCall` against the local Home Assistant instance first when it looks reachable,
    * falling back to `cloudCall` (the cloud relay) if the local attempt fails or isn't available.
    * Updates the transport mode reported by `getTransportMode()` to reflect whichever path served the request.
    */
   private async withLocalFallback<T>(action: string, localCall: (baseUrl: string, token: string) => Promise<T>, cloudCall: () => Promise<T>): Promise<T> {
+    await this.ensureLocalSession();
     if (this.shouldPreferLocal()) {
       try {
         const result = await localCall(this.config.localBaseUrl!, this.config.localAccessToken!);
@@ -145,6 +178,20 @@ export class FluxClient {
       } catch (error) {
         const message = error instanceof Error ? error.message : `Local ${action} failed`;
         this.diagnostic('warn', 'transport.local.fallback', `Local ${action} failed (${message}); falling back to cloud relay`);
+        this.config.localAccessToken = undefined;
+        this.config.localUseLan = false;
+        await this.persistState();
+        await this.ensureLocalSession();
+        if (this.shouldPreferLocal()) {
+          try {
+            const result = await localCall(this.config.localBaseUrl!, this.config.localAccessToken!);
+            this.activeTransport = 'local';
+            return result;
+          } catch (retryError) {
+            const retryMessage = retryError instanceof Error ? retryError.message : `Local ${action} retry failed`;
+            this.diagnostic('warn', 'transport.local.retry.failed', retryMessage);
+          }
+        }
       }
     }
     const result = await cloudCall();
@@ -190,6 +237,34 @@ export class FluxClient {
     this.config.localUseLan = true;
     await this.persistState();
     this.diagnostic('info', 'transport.local.login', `Signed in to local instance at ${baseUrl}`);
+  }
+
+  /**
+   * Exchanges the active cloud session for a short-lived local token through the authenticated
+   * relay tunnel. The token is then used only for requests directly to `baseUrl`.
+   */
+  public async exchangeCloudSessionForLocal(baseUrl: string): Promise<void> {
+    const instanceId = this.config.instanceId?.trim();
+    const accessToken = this.authSession?.token || this.config.accessToken;
+    if (!instanceId || !accessToken) throw new Error('Sign in to the cloud before connecting locally');
+
+    const response = await this.fetchImpl(new URL('/api/auth/local-session', this.relayUrl), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'x-instance-id': instanceId,
+      },
+    });
+    const payload = await response.json() as { message?: string; data?: { token?: string } };
+    if (!response.ok || !payload.data?.token) throw new Error(payload.message || 'Local session exchange failed');
+
+    this.config.localBaseUrl = baseUrl;
+    this.config.localAccessToken = payload.data.token;
+    this.config.localUseLan = true;
+    this.activeTransport = 'local';
+    await this.persistState();
+    this.diagnostic('info', 'transport.local.exchange', `Cloud session exchanged for a local token at ${baseUrl}`);
   }
 
   public async logout(): Promise<void> {
