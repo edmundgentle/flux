@@ -166,7 +166,8 @@ pub fn create_router(state: AppState) -> axum::Router {
         // Admin dashboard endpoints
         .route("/api/admin/users", get(list_admin_users))
         .route("/api/admin/browse", get(browse_user_files))
-        .route("/ui", get(serve_admin_ui))
+        // Only reachable at root, via Home Assistant Ingress (no standalone /ui path anymore).
+        .route("/", get(serve_admin_ui))
         .layer(CorsLayer::permissive())
         .layer(RequestBodyLimitLayer::new(25 * 1024 * 1024))
         .with_state(state)
@@ -831,10 +832,20 @@ async fn list_shares(
 // Admin dashboard handlers
 // ==========================================
 
+/// Requests proxied through Home Assistant's Ingress carry this header (added by the Supervisor
+/// and stripped from any request that didn't come through it), meaning the caller is already an
+/// authenticated, logged-in HA user, so the dashboard can be trusted without a bearer token.
+fn is_ingress_request(headers: &HeaderMap) -> bool {
+    headers.contains_key("x-ingress-path")
+}
+
 async fn require_admin(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<String, (StatusCode, Json<ApiResponse<()>>)> {
+    if is_ingress_request(headers) {
+        return Ok("ingress".to_string());
+    }
     let requesting_user = get_request_user(headers, None, None, &state.account_manager)?;
     if !state.account_manager.is_admin(&requesting_user) {
         return Err((
@@ -1023,8 +1034,12 @@ async fn browse_user_files(
     }))
 }
 
-async fn serve_admin_ui() -> Html<&'static str> {
-    Html(include_str!("static/admin.html"))
+async fn serve_admin_ui(headers: HeaderMap) -> Result<Html<&'static str>, StatusCode> {
+    // Only reachable through Home Assistant's Ingress proxy, not directly over the exposed port.
+    if !is_ingress_request(&headers) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(Html(include_str!("static/admin.html")))
 }
 
 #[cfg(test)]

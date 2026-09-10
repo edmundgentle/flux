@@ -1,5 +1,5 @@
 name: Flux
-version: "1.0.10"
+version: "1.0.11"
 slug: flux
 description: Local personal search, file management, and vision analysis server.
 arch:
@@ -7,6 +7,9 @@ arch:
   - aarch64
 startup: services
 boot: auto
+ingress: true
+ingress_port: 8080
+panel_icon: mdi:image-multiple-outline
 ports:
   8080/tcp: 8080
 map:

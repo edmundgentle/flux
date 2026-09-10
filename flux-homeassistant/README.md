@@ -8,7 +8,7 @@ The add-on image currently supports `amd64` and `aarch64`. Local-only operation 
 
 ## Admin dashboard
 
-An admin-only dashboard is available at `http://<addon-host>:8080/ui`. It lists all registered accounts, their storage usage, and whether the outbound cloud relay WebSocket is currently connected; it also lets you browse each user's file workspace (Photos/Documents/Files). Log in as an admin via `/api/auth/login`, paste the returned token into the dashboard, and connect. The dashboard talks to these endpoints:
+The admin dashboard is only exposed through Home Assistant's Ingress: use the **Open Web UI** button on the add-on's page to open it embedded in the HA frontend. Since Ingress traffic is already authenticated by your logged-in HA session, the dashboard skips the token login step. It is not reachable directly over the exposed port (there is no standalone `/ui` path) — it lists all registered accounts, their storage usage, and whether the outbound cloud relay WebSocket is currently connected; it also lets you browse each user's file workspace (Photos/Documents/Files). The dashboard talks to these endpoints:
 
 - `GET /api/admin/users`: admin-only, returns the account list (with per-user storage usage) plus the live cloud connection state.
 - `GET /api/admin/browse?user=<name>&path=<relative>`: admin-only, lists files/folders inside a user's workspace, sandboxed to that user's root directory.
