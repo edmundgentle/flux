@@ -170,7 +170,7 @@ impl AccountManager {
 
     fn ensure_user_workspace(&self, username: &str) -> Result<(), String> {
         let workspace_root = self.data_dir.join(username);
-        for folder in ["Photos", "Documents", "Files"] {
+        for folder in ["Photos", "Documents", "Files", "Notes", "Contacts"] {
             let path = workspace_root.join(folder);
             if !path.exists() {
                 fs::create_dir_all(&path)

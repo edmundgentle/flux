@@ -288,7 +288,7 @@ impl FileManager {
             }
         }
 
-        for category in ["Photos", "Documents", "Files"] {
+        for category in ["Photos", "Documents", "Files", "Notes", "Contacts"] {
             for i in 1..components.len() {
                 if components[i].as_os_str() == category && i > 0 {
                     return components[i - 1].as_os_str().to_string_lossy().to_string();
@@ -300,6 +300,7 @@ impl FileManager {
             "",
             ".",
             "..",
+            "config",
             "data",
             "media",
             "mnt",
@@ -311,6 +312,7 @@ impl FileManager {
             "users",
             "home",
             "opt",
+            "search_vision",
         ];
 
         for component in components.iter().skip(1) {
@@ -339,5 +341,14 @@ mod tests {
     fn extracts_owner_from_default_home_assistant_workspace_path() {
         let path = Path::new("/config/search_vision/alice/Photos/photo.jpg");
         assert_eq!(FileManager::extract_owner_from_path(path), "alice");
+    }
+
+    #[test]
+    fn extracts_owner_from_notes_and_contacts_workspace_paths() {
+        let note_path = Path::new("/config/search_vision/alice/Notes/note_123.md");
+        assert_eq!(FileManager::extract_owner_from_path(note_path), "alice");
+
+        let contact_path = Path::new("/config/search_vision/bob/Contacts/contact_456.json");
+        assert_eq!(FileManager::extract_owner_from_path(contact_path), "bob");
     }
 }
