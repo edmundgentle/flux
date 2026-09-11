@@ -55,6 +55,53 @@ test('login stores the returned auth token', async () => {
   assert.equal(client.getAuthSession()?.token, 'def456');
 });
 
+test('login propagates error messages from the server', async () => {
+  const client = new FluxClient({
+    relayUrl: 'http://relay.test',
+    instanceId: 'instance-a',
+    autoConnect: false,
+    fetchImpl: async (input) => {
+      const url = String(input);
+      if (url.endsWith('/api/auth/login')) {
+        return createJsonResponse({ success: false, message: 'Invalid email or password' }, { status: 401 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.login({ username: 'bob', password: 'wrongpassword' }),
+    /Invalid email or password/i
+  );
+});
+
+test('login with specific instance requested sends instance_id', async () => {
+  const calls = [];
+  const client = new FluxClient({
+    relayUrl: 'http://relay.test',
+    instanceId: '',
+    autoConnect: false,
+    fetchImpl: async (input, init) => {
+      calls.push(JSON.parse(init?.body));
+      return createJsonResponse({
+        success: true,
+        data: {
+          user: 'bob@example.com',
+          token: 'tok-123',
+          instanceId: 'instance-custom',
+          instances: [{ instanceId: 'instance-custom', label: 'My House' }],
+        },
+      });
+    },
+  });
+
+  const session = await client.login({ username: 'bob@example.com', password: 'secret', instanceId: 'instance-custom' });
+
+  assert.equal(session.instanceId, 'instance-custom');
+  assert.equal(calls[0].instance_id, 'instance-custom');
+  assert.equal(client.getAuthSession()?.token, 'tok-123');
+});
+
 test('exchanges the cloud session for a local-only token', async () => {
   const calls = [];
   const client = new FluxClient({

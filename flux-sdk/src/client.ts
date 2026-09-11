@@ -579,6 +579,27 @@ export class FluxClient {
     );
   }
 
+  public async deleteFile(path: string): Promise<void> {
+    return await this.withLocalFallback(
+      'delete',
+      async (baseUrl, token) => {
+        const url = new URL('/api/files', baseUrl);
+        url.searchParams.set('path', path);
+        const response = await this.fetchImpl(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+        if (!response.ok) throw new Error(`Delete failed: ${response.status}`);
+      },
+      async () => {
+        const payload = await this.sendRelayRequest<ProxyResponse<unknown>>({
+          method: 'DELETE',
+          path: '/api/files',
+          query: { path },
+          headers: { Authorization: `Bearer ${this.authSession?.token || this.config.accessToken || ''}` },
+        });
+        if (!payload || payload.status >= 400) throw new Error('Delete failed');
+      },
+    );
+  }
+
   public async getConfig(): Promise<Record<string, unknown>> { return await this.httpRequest('/api/config', 'GET'); }
 
   public async disconnect(): Promise<void> {

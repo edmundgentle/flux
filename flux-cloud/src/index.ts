@@ -312,7 +312,9 @@ app.post('/api/instances/:instanceId/members', authRateLimit, requireInstanceTok
 });
 
 app.post('/api/auth/register', authRateLimit, async (req, res) => {
-  const { email, password, label } = req.body ?? {};
+  const email = typeof req.body?.email === 'string' ? req.body.email : (typeof req.body?.username === 'string' ? req.body.username : undefined);
+  const password = req.body?.password;
+  const label = req.body?.label;
   if (typeof email !== 'string' || typeof password !== 'string') {
     res.status(400).json({ success: false, message: 'email and password are required' });
     return;
@@ -337,7 +339,9 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
 });
 
 app.post('/api/auth/login', authRateLimit, async (req, res) => {
-  const { email, password, instance_id: requestedInstanceId } = req.body ?? {};
+  const email = typeof req.body?.email === 'string' ? req.body.email : (typeof req.body?.username === 'string' ? req.body.username : undefined);
+  const password = req.body?.password;
+  const requestedInstanceId = req.body?.instance_id;
   if (typeof email !== 'string' || typeof password !== 'string') {
     res.status(400).json({ success: false, message: 'email and password are required' });
     return;
@@ -352,20 +356,23 @@ app.post('/api/auth/login', authRateLimit, async (req, res) => {
       res.status(404).json({ success: false, message: 'Instance not found for this account' });
       return;
     }
+    if (!instance) {
+      res.status(404).json({ success: false, message: 'No instance found for this account' });
+      return;
+    }
     res.json({
       success: true,
       data: {
         user: email.trim().toLowerCase(),
-        ...(instance ? {
-          token: instance.accessToken,
-          instanceId: instance.instanceId,
-          label: instance.label,
-        } : {}),
+        token: instance.accessToken,
+        instanceId: instance.instanceId,
+        label: instance.label,
         instances: instances.map(({ instanceId, label }) => ({ instanceId, label })),
       },
     });
-  } catch {
-    res.status(401).json({ success: false, message: 'Invalid email or password' });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid email or password';
+    res.status(401).json({ success: false, message });
   }
 });
 

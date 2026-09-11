@@ -77,6 +77,7 @@ export declare class FluxClient {
      * can be handed straight to `<Image>` or similar.
      */
     downloadFileAsDataUri(path: string, options?: DownloadOptions): Promise<string>;
+    deleteFile(path: string): Promise<void>;
     getConfig(): Promise<Record<string, unknown>>;
     disconnect(): Promise<void>;
 }

@@ -134,9 +134,20 @@ export class UserStore {
       throw new Error('Invalid email or password');
     }
 
+    await this.pool.query(
+      'UPDATE instance_members SET user_id = $1, joined_at = COALESCE(joined_at, now()) WHERE invited_email = $2 AND user_id IS NULL',
+      [user.id, normalizedEmail]
+    );
+
     const instancesResult = await this.pool.query<{ instance_id: string; label: string }>(
-      'SELECT instance_id, label FROM instances WHERE user_id = $1 ORDER BY created_at ASC',
-      [user.id]
+      `SELECT instance_id, label
+       FROM instances
+       WHERE user_id = $1
+          OR instance_id IN (
+            SELECT instance_id FROM instance_members WHERE user_id = $1 OR invited_email = $2
+          )
+       ORDER BY created_at ASC`,
+      [user.id, normalizedEmail]
     );
     return await Promise.all(instancesResult.rows.map(async (row) => ({
       instanceId: row.instance_id,

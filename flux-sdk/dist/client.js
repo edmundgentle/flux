@@ -563,6 +563,24 @@ export class FluxClient {
             return await parseDataUri(response);
         });
     }
+    async deleteFile(path) {
+        return await this.withLocalFallback('delete', async (baseUrl, token) => {
+            const url = new URL('/api/files', baseUrl);
+            url.searchParams.set('path', path);
+            const response = await this.fetchImpl(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+            if (!response.ok)
+                throw new Error(`Delete failed: ${response.status}`);
+        }, async () => {
+            const payload = await this.sendRelayRequest({
+                method: 'DELETE',
+                path: '/api/files',
+                query: { path },
+                headers: { Authorization: `Bearer ${this.authSession?.token || this.config.accessToken || ''}` },
+            });
+            if (!payload || payload.status >= 400)
+                throw new Error('Delete failed');
+        });
+    }
     async getConfig() { return await this.httpRequest('/api/config', 'GET'); }
     async disconnect() {
         this.reconnectEnabled = false;
