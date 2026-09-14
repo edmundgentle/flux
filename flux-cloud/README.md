@@ -7,15 +7,15 @@ This project provides the multi-instance relay layer for Flux. It exposes a secu
 - scoped bearer-token REST endpoints
 - self-service registration and login backed by PostgreSQL
 - instance-aware token validation
-- Redis-backed cross-process tunnel routing keyed by instance_id
-- Redis-backed one-time WebSocket tickets
+- Valkey/Redis-backed cross-process tunnel routing keyed by instance_id
+- Valkey/Redis-backed one-time WebSocket tickets
 - outbound relay socket registration from local HA boxes
 - proxy request/response envelopes for remote request forwarding
 
 ## Quick start
 
 1. Set `DATABASE_URL` to a PostgreSQL instance; tables are created automatically on startup.
-2. Set `REDIS_URL` to a shared Redis instance. This is required when more than one relay process is running.
+2. Set `VALKEY_URL` to the shared managed Valkey connection string. Both `valkey://` and TLS `valkeys://` URLs are accepted. `REDIS_URL` remains supported as a backward-compatible alias.
 3. Start the relay:
 
 ```bash

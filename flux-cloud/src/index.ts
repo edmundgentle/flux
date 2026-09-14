@@ -211,24 +211,6 @@ async function resolveOEmbed(url: string): Promise<unknown | null> {
   return response.json();
 }
 
-async function transcribeWithWhisper(apiKey: string, audioBase64: string, mimeType: string, filename: string): Promise<string> {
-  const buffer = Buffer.from(audioBase64, 'base64');
-  const form = new FormData();
-  form.append('file', new Blob([buffer], { type: mimeType }), filename);
-  form.append('model', 'whisper-1');
-  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { authorization: `Bearer ${apiKey}` },
-    body: form,
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Whisper API error (${response.status}): ${text.slice(0, 200)}`);
-  }
-  const json = await response.json() as { text?: string };
-  return json.text || '';
-}
-
 app.post('/api/instances/provision', provisionRateLimit, async (req, res) => {
   const { label } = req.body ?? {};
   try {
@@ -390,28 +372,6 @@ app.get('/api/oembed', authRateLimit, async (req, res) => {
     res.json(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to resolve oEmbed data';
-    res.status(502).json({ success: false, message });
-  }
-});
-
-// Audio transcription for note voice clips. Requires OPENAI_API_KEY; without it
-// clients keep the recording and simply skip the transcript.
-app.post('/api/transcribe', authRateLimit, requireAccessToken, async (req, res) => {
-  const { audioBase64, mimeType, filename } = req.body ?? {};
-  if (typeof audioBase64 !== 'string' || !audioBase64) {
-    res.status(400).json({ success: false, message: 'audioBase64 is required' });
-    return;
-  }
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    res.status(503).json({ success: false, message: 'Transcription is not configured on this server' });
-    return;
-  }
-  try {
-    const transcript = await transcribeWithWhisper(apiKey, audioBase64, typeof mimeType === 'string' ? mimeType : 'audio/m4a', typeof filename === 'string' ? filename : 'audio.m4a');
-    res.json({ success: true, data: { transcript } });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Transcription failed';
     res.status(502).json({ success: false, message });
   }
 });

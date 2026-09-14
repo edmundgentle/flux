@@ -32,9 +32,10 @@ export function loadConfig(): AppConfig {
     throw new Error('DATABASE_URL environment variable is required to store instances and users');
   }
 
-  const redisUrl = process.env.REDIS_URL;
+  const configuredRedisUrl = process.env.VALKEY_URL || process.env.REDIS_URL;
+  const redisUrl = configuredRedisUrl?.replace(/^valkeys:\/\//i, 'rediss://').replace(/^valkey:\/\//i, 'redis://');
   if (!redisUrl) {
-    throw new Error('REDIS_URL environment variable is required for multi-instance relay coordination');
+    throw new Error('VALKEY_URL (or REDIS_URL) is required for multi-instance relay coordination');
   }
 
   const port = Number(process.env.PORT || 3000);

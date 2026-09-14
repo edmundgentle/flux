@@ -20,7 +20,7 @@ import ColorPicker from './ColorPicker';
 import Popover from './Popover';
 import AudioAttachmentView from './AudioAttachmentView';
 import VisualNoteEditor, { VisualNoteEditorHandle } from './VisualNoteEditor';
-import { transcribeAudio } from '../utils/transcribe';
+import { destroySpeechSession, startSpeechSession, SpeechSession } from '../utils/onDeviceTranscribe';
 import type { FluxClient } from '@flux-sdk/core';
 
 type Props = {
@@ -57,6 +57,7 @@ export default function NoteEditorModal({
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
   const recorderState = useAudioRecorderState(recorder, 100);
   const meterSamplesRef = useRef<number[]>([]);
+  const speechSessionRef = useRef<SpeechSession | null>(null);
   const editorRef = useRef<VisualNoteEditorHandle>(null);
   const [newLabelText, setNewLabelText] = useState('');
   const [showLabelInput, setShowLabelInput] = useState(false);
@@ -101,6 +102,10 @@ export default function NoteEditorModal({
       setShowColors(false);
     }
   }, [visible, initialNote, initialIsChecklist, initialDraft]);
+
+  useEffect(() => () => {
+    void destroySpeechSession();
+  }, []);
 
   const theme = NOTE_COLORS[color] || NOTE_COLORS.default;
 
@@ -169,10 +174,13 @@ export default function NoteEditorModal({
   const toggleRecording = async () => {
     if (recorder.isRecording) {
       const durationMs = recorder.currentTime * 1000;
+      const speechSession = speechSessionRef.current;
+      speechSessionRef.current = null;
       await recorder.stop();
       const waveform = meterSamplesRef.current;
       meterSamplesRef.current = [];
       if (recorder.uri) {
+        const transcript = speechSession ? await speechSession.stop().catch(() => '') : '';
         const attachmentId = addAttachment({
           name: `recording-${Date.now()}.m4a`,
           uri: recorder.uri,
@@ -180,29 +188,29 @@ export default function NoteEditorModal({
           kind: 'audio',
           waveform,
           durationMs,
-          transcriptStatus: 'pending',
+          transcript: transcript || undefined,
+          transcriptStatus: transcript ? 'ready' : 'error',
         });
-        void transcribeIfPossible(attachmentId, recorder.uri);
       }
       return;
     }
     const permission = await requestRecordingPermissionsAsync();
     if (!permission.granted) return Alert.alert('Microphone permission required');
-    meterSamplesRef.current = [];
-    await recorder.prepareToRecordAsync();
-    recorder.record();
-  };
-
-  const transcribeIfPossible = async (attachmentId: string, uri: string) => {
-    const session = client?.getAuthSession();
-    if (!session) {
-      setAttachments((current) => current.map((a) => a.id === attachmentId ? { ...a, transcriptStatus: 'error' } : a));
-      return;
+    try {
+      speechSessionRef.current = await startSpeechSession();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Speech recognition is unavailable';
+      return Alert.alert('Speech recognition unavailable', message);
     }
-    const transcript = await transcribeAudio(uri, 'audio/m4a', session.token, session.instanceId);
-    setAttachments((current) => current.map((a) => a.id === attachmentId
-      ? { ...a, transcript: transcript || undefined, transcriptStatus: transcript ? 'ready' : 'error' }
-      : a));
+    meterSamplesRef.current = [];
+    try {
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+    } catch (error) {
+      speechSessionRef.current = null;
+      await destroySpeechSession();
+      throw error;
+    }
   };
 
   const handleRemoveLabel = (labelToRemove: string) => {

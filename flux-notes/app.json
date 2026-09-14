@@ -18,11 +18,13 @@
         ,"NSCameraUsageDescription": "Flux Notes uses the camera to add photos and videos to notes."
         ,"NSPhotoLibraryUsageDescription": "Flux Notes imports photos and videos into your notes."
         ,"NSMicrophoneUsageDescription": "Flux Notes records audio attachments for notes."
+        ,"NSSpeechRecognitionUsageDescription": "Flux Notes transcribes audio attachments on this device."
       }
     },
     "android": {
       "package": "com.flux.notes",
       "usesCleartextTraffic": true,
+      "permissions": ["RECORD_AUDIO"],
       "adaptiveIcon": {
         "backgroundColor": "#FEF7E0",
         "foregroundImage": "./assets/android-icon-foreground.png",
