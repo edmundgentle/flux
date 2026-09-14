@@ -4,6 +4,19 @@ export type ChecklistItem = {
   completed: boolean;
 };
 
+export type NoteAttachment = {
+  id: string;
+  name: string;
+  uri: string;
+  mimeType: string;
+  kind: 'image' | 'video' | 'audio' | 'file' | 'drawing';
+  // Audio-only metadata used to render a waveform and transcript inline.
+  waveform?: number[];
+  durationMs?: number;
+  transcript?: string;
+  transcriptStatus?: 'pending' | 'ready' | 'error';
+};
+
 export type NoteColorId =
   | 'default'
   | 'coral'
@@ -175,6 +188,7 @@ export type NoteItem = {
   pinned: boolean;
   color: NoteColorId;
   labels: string[];
+  attachments?: NoteAttachment[];
   createdAt: number;
   updatedAt: number;
   archived?: boolean;

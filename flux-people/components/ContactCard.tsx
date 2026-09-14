@@ -2,6 +2,7 @@ import React from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ContactItem } from '../types/contact';
+import { openPhoneDeepLink } from '../utils/contactUtils';
 import Avatar from './Avatar';
 
 type Props = {
@@ -11,14 +12,15 @@ type Props = {
 };
 
 export default function ContactCard({ contact, onPress, onToggleFavorite }: Props) {
-  const primaryPhone = contact.phones[0]?.number;
-  const primaryEmail = contact.emails[0]?.email;
-  const subText = contact.company || contact.jobTitle || primaryPhone || primaryEmail || '';
+  const primaryPhone = contact.phones?.[0]?.number;
+  const primaryEmail = contact.emails?.[0]?.email;
+  const companyJob = [contact.jobTitle, contact.company].filter(Boolean).join(' • ');
+  const subText = companyJob || primaryPhone || primaryEmail || '';
 
   const callPrimaryPhone = (e: any) => {
     e.stopPropagation();
     if (primaryPhone) {
-      void Linking.openURL(`tel:${primaryPhone.replace(/\s+/g, '')}`);
+      void openPhoneDeepLink(primaryPhone, 'call');
     }
   };
 
@@ -131,3 +133,4 @@ const styles = StyleSheet.create({
     backgroundColor: '#f1f5f9',
   },
 });
+

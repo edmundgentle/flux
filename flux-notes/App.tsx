@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { ShareIntentProvider } from 'expo-share-intent';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DiagnosticEvent, FluxClient } from '@flux-sdk/core';
 import LoginScreen from './screens/LoginScreen';
@@ -11,9 +12,11 @@ type Screen = 'login' | 'register';
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <AppContent />
-    </SafeAreaProvider>
+    <ShareIntentProvider>
+      <SafeAreaProvider>
+        <AppContent />
+      </SafeAreaProvider>
+    </ShareIntentProvider>
   );
 }
 

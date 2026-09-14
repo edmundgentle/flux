@@ -1,7 +1,8 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { NoteColorTheme } from '../types/note';
+import OEmbedCard from './OEmbedCard';
 
 type Props = {
   content: string;
@@ -24,6 +25,36 @@ export default function MarkdownView({ content, theme, numberOfLines }: Props) {
 
     const line = lines[i];
     if (line.startsWith('---')) continue; // Skip frontmatter dividers if any
+
+    // Inline Markdown image attachment: ![caption](uri)
+    const imageMatch = line.match(/^!\[([^\]]*)\]\((.+)\)$/);
+    if (imageMatch) {
+      renderedLines.push(
+        <View key={i} style={styles.mediaBlock}>
+          <Image source={{ uri: imageMatch[2] }} style={styles.inlineImage} resizeMode="cover" />
+          {imageMatch[1] ? <Text style={[styles.mediaCaption, { color: theme.secondaryText }]}>{imageMatch[1]}</Text> : null}
+        </View>
+      );
+      continue;
+    }
+
+    // Inline link attachment: [caption](uri)
+    const attachmentMatch = line.match(/^\[([^\]]+)\]\((.+)\)$/);
+    if (attachmentMatch) {
+      renderedLines.push(
+        <View key={i} style={[styles.fileAttachment, { borderColor: theme.border, backgroundColor: theme.badgeBg }]}>
+          <Ionicons name="attach-outline" size={16} color={theme.accent} />
+          <Text style={[styles.fileAttachmentText, { color: theme.text }]}>{attachmentMatch[1]}</Text>
+        </View>
+      );
+      continue;
+    }
+
+    // Bare URL on its own line: render a rich oEmbed preview when available.
+    if (!numberOfLines && /^https?:\/\/\S+$/.test(line.trim())) {
+      renderedLines.push(<OEmbedCard key={i} url={line.trim()} theme={theme} />);
+      continue;
+    }
 
     // Headers
     if (line.startsWith('# ')) {
@@ -198,4 +229,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     fontSize: 13,
   },
+  mediaBlock: { marginVertical: 6 },
+  inlineImage: { width: '100%', height: 190, borderRadius: 10, backgroundColor: '#e2e8f0' },
+  mediaCaption: { fontSize: 12, marginTop: 4 },
+  fileAttachment: { flexDirection: 'row', alignItems: 'center', gap: 7, borderWidth: 1, borderRadius: 8, padding: 9, marginVertical: 3 },
+  fileAttachmentText: { fontSize: 13, flex: 1 },
 });

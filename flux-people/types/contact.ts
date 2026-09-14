@@ -24,15 +24,36 @@ export type AddressItem = {
   country: string;
 };
 
+export type SocialPlatform =
+  | 'Twitter'
+  | 'LinkedIn'
+  | 'GitHub'
+  | 'Instagram'
+  | 'Facebook'
+  | 'Telegram'
+  | 'WhatsApp'
+  | 'Website'
+  | string;
+
+export type SocialProfileItem = {
+  id: string;
+  platform: SocialPlatform;
+  username: string;
+  url?: string;
+};
+
 export type ContactItem = {
   id: string;
   firstName: string;
+  middleName?: string;
+  surname?: string;
   lastName: string;
   displayName: string;
   company?: string;
   jobTitle?: string;
   phones: PhoneItem[];
   emails: EmailItem[];
+  socialProfiles?: SocialProfileItem[];
   addresses: AddressItem[];
   notes?: string;
   birthday?: string;
@@ -43,3 +64,4 @@ export type ContactItem = {
   updatedAt: number;
   path: string;
 };
+

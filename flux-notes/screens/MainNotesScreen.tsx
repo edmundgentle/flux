@@ -9,13 +9,14 @@ import {
   Text,
   TextInput,
   View,
-  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useShareIntentContext } from 'expo-share-intent';
 import { ConnectionState, DiagnosticEvent, FluxClient, SearchResult, TransportMode } from '@flux-sdk/core';
-import { NoteItem, ViewMode } from '../types/note';
+import { NoteAttachment, NoteItem, ViewMode } from '../types/note';
 import { parseNoteMarkdown, serializeNoteMarkdown } from '../utils/markdownParser';
+import { deleteCachedNote, getCachedNotes, saveCachedNotes, searchCachedNotes, upsertCachedNote } from '../utils/noteCache';
 import NoteCard from '../components/NoteCard';
 import NoteEditorModal from '../components/NoteEditorModal';
 
@@ -40,13 +41,29 @@ function getConnectionIcon(connectionState: ConnectionState, transport: Transpor
   return { name: 'cloud-outline', color: '#2563eb' };
 }
 
+function splitMasonryColumns(notes: NoteItem[]): [NoteItem[], NoteItem[]] {
+  const columns: [NoteItem[], NoteItem[]] = [[], []];
+  const heights = [0, 0];
+  for (const note of notes) {
+    // Keep columns balanced using a stable content-height estimate. Unlike a
+    // wrapping grid, each column flows independently and never leaves row gaps.
+    const estimate = 92 + Math.min(note.content.length / 2, 180)
+      + Math.min(note.checklistItems.length * 28, 140)
+      + (note.attachments?.length ? 28 : 0);
+    const target = heights[0] <= heights[1] ? 0 : 1;
+    columns[target].push(note);
+    heights[target] += estimate;
+  }
+  return columns;
+}
+
 export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Props) {
-  const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const [connectionState, setConnectionState] = useState(client.getState());
   const [query, setQuery] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [notes, setNotes] = useState<NoteItem[]>([]);
+  const [cachedNotes, setCachedNotes] = useState<NoteItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('Syncing notes...');
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +75,30 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingNote, setEditingNote] = useState<NoteItem | null>(null);
   const [initialIsChecklist, setInitialIsChecklist] = useState(false);
+  const [sharedDraft, setSharedDraft] = useState<{ title?: string; content?: string; attachments?: NoteAttachment[] } | null>(null);
+
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntentContext();
+
+  // A note shared in from another app opens a prefilled draft in the editor.
+  useEffect(() => {
+    if (!hasShareIntent) return;
+    const sharedAttachments: NoteAttachment[] = (shareIntent.files || []).map((file, index) => ({
+      id: `shared_${Date.now()}_${index}`,
+      name: file.fileName || `shared-${index}`,
+      uri: file.path,
+      mimeType: file.mimeType || 'application/octet-stream',
+      kind: file.mimeType?.startsWith('image/') ? 'image' : file.mimeType?.startsWith('video/') ? 'video' : file.mimeType?.startsWith('audio/') ? 'audio' : 'file',
+    }));
+    setSharedDraft({
+      title: shareIntent.meta?.title,
+      content: shareIntent.text || shareIntent.webUrl || '',
+      attachments: sharedAttachments,
+    });
+    setEditingNote(null);
+    setInitialIsChecklist(false);
+    setEditorOpen(true);
+    resetShareIntent();
+  }, [hasShareIntent, shareIntent, resetShareIntent]);
 
   useEffect(() => {
     const unsubscribe = client.onStateChange(setConnectionState);
@@ -66,9 +107,17 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
 
   const authSession = client.getAuthSession();
 
+  useEffect(() => {
+    void getCachedNotes().then((cached) => {
+      setCachedNotes(cached);
+      if (cached.length > 0) setNotes(searchCachedNotes(cached, query));
+    });
+  }, []);
+
   const loadNotes = useCallback(async (searchQuery: string) => {
     setLoading(true);
     setError(null);
+    setNotes(searchCachedNotes(cachedNotes, searchQuery));
 
     try {
       await client.connect();
@@ -85,7 +134,7 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
       );
 
       // Fetch file content for each note
-      const loadedNotes: NoteItem[] = await Promise.all(
+      const results = await Promise.all(
         noteFiles.map(async (fileRes) => {
           try {
             // Download raw Markdown text
@@ -93,15 +142,12 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
             const text = await blob.text();
             return parseNoteMarkdown(text, fileRes.path, fileRes.date_created);
           } catch (downloadErr) {
-            // Fall back to content_preview if direct download fails
-            return parseNoteMarkdown(
-              fileRes.content_preview || `# ${fileRes.file_name}`,
-              fileRes.path,
-              fileRes.date_created
-            );
+            // Previews are often truncated; do not manufacture a corrupt note.
+            return null;
           }
         })
       );
+      const loadedNotes = results.filter((note): note is NoteItem => note !== null);
 
       // Sort notes: pinned first, then by updatedAt / createdAt descending
       const sorted = loadedNotes.sort((a, b) => {
@@ -109,7 +155,18 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
         return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt);
       });
 
-      setNotes(sorted);
+      if (!searchQuery.trim() && loadedNotes.length === noteFiles.length) {
+        await saveCachedNotes(sorted);
+        setCachedNotes(sorted);
+        setNotes(sorted);
+      } else if (!searchQuery.trim()) {
+        const merged = [...sorted, ...cachedNotes.filter((cached) =>
+          !sorted.some((server) => server.id === cached.id || server.path === cached.path)
+        )];
+        setNotes(merged);
+      } else {
+        setNotes(sorted);
+      }
       setStatus(
         searchQuery.trim()
           ? `${sorted.length} notes matching "${searchQuery.trim()}"`
@@ -122,7 +179,7 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
     } finally {
       setLoading(false);
     }
-  }, [client]);
+  }, [client, cachedNotes]);
 
   // Debounced search on typing
   useEffect(() => {
@@ -159,27 +216,55 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
     const filename = `${cleanId}.md`;
     const filePath = isNew ? `Notes/${filename}` : noteData.path!;
 
-    const markdownString = serializeNoteMarkdown({
-      ...noteData,
-      id: cleanId,
-      path: filePath,
-    });
+    let attachments = noteData.attachments || [];
+    let content = noteData.content || '';
+    try {
+      attachments = await Promise.all(attachments.map(async (attachment) => {
+        if (!attachment.uri.startsWith('file:') && !attachment.uri.startsWith('content:')) return attachment;
+        const blob = await (await fetch(attachment.uri)).blob();
+        const uploaded = await client.uploadFile(blob, { directory: `/Notes/${cleanId}`, path: attachment.name });
+        content = content.split(attachment.uri).join(uploaded.path);
+        return { ...attachment, uri: uploaded.path };
+      }));
+    } catch (error) {
+      console.warn('Some attachments will remain local until the next save:', error);
+    }
+
+    const markdownString = serializeNoteMarkdown({ ...noteData, content, attachments, id: cleanId, path: filePath });
 
     const encoder = new TextEncoder();
     const bytes = encoder.encode(markdownString);
 
     // Save to /{user}/Notes on Flux deployment
-    await client.uploadFile(bytes, {
-      directory: '/Notes',
-      path: filename,
-    });
+    const savedNote: NoteItem = {
+      id: cleanId, path: filePath, title: noteData.title, content,
+      isChecklist: Boolean(noteData.isChecklist), checklistItems: noteData.checklistItems || [],
+      pinned: Boolean(noteData.pinned), color: noteData.color || 'default', labels: noteData.labels || [],
+      createdAt: noteData.createdAt || timestamp, updatedAt: timestamp, attachments,
+    };
+    const updatedCache = await upsertCachedNote(savedNote);
+    setCachedNotes(updatedCache);
+    setNotes(searchCachedNotes(updatedCache, query));
 
-    await loadNotes(query);
+    try {
+      await client.uploadFile(bytes, { directory: '/Notes', path: filename });
+    } catch (error) {
+      console.warn('Saved note locally; upload will retry on the next sync:', error);
+    }
   };
 
   const handleDeleteNote = async (noteId: string, filePath: string) => {
-    await client.deleteFile(filePath);
-    await loadNotes(query);
+    const note = notes.find((item) => item.id === noteId || item.path === filePath);
+    if (note) {
+      const updatedCache = await deleteCachedNote(note);
+      setCachedNotes(updatedCache);
+      setNotes(searchCachedNotes(updatedCache, query));
+    }
+    try {
+      await client.deleteFile(filePath);
+    } catch (error) {
+      console.warn('Deleted note locally; remote delete failed:', error);
+    }
   };
 
   const handleTogglePin = async (note: NoteItem) => {
@@ -190,16 +275,15 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
     setNotes((prev: NoteItem[]) =>
       prev.map((n: NoteItem) => (n.id === note.id ? updatedNote : n))
     );
+    const updatedCache = await upsertCachedNote(updatedNote);
+    setCachedNotes(updatedCache);
 
     const markdownString = serializeNoteMarkdown(updatedNote);
     const encoder = new TextEncoder();
     const bytes = encoder.encode(markdownString);
 
     const filename = note.path.split('/').pop() || `${note.id}.md`;
-    await client.uploadFile(bytes, {
-      directory: '/Notes',
-      path: filename,
-    });
+    try { await client.uploadFile(bytes, { directory: '/Notes', path: filename }); } catch (error) { console.warn('Pin updated locally:', error); }
   };
 
   const handleToggleCheckItem = async (note: NoteItem, itemId: string) => {
@@ -211,16 +295,15 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
     setNotes((prev: NoteItem[]) =>
       prev.map((n: NoteItem) => (n.id === note.id ? updatedNote : n))
     );
+    const updatedCache = await upsertCachedNote(updatedNote);
+    setCachedNotes(updatedCache);
 
     const markdownString = serializeNoteMarkdown(updatedNote);
     const encoder = new TextEncoder();
     const bytes = encoder.encode(markdownString);
 
     const filename = note.path.split('/').pop() || `${note.id}.md`;
-    await client.uploadFile(bytes, {
-      directory: '/Notes',
-      path: filename,
-    });
+    try { await client.uploadFile(bytes, { directory: '/Notes', path: filename }); } catch (error) { console.warn('Checklist updated locally:', error); }
   };
 
   const signOut = async () => {
@@ -241,9 +324,6 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
   const instanceLabel = authSession?.label || authSession?.instanceId || 'Flux Instance';
 
   const isGrid = viewMode === 'grid';
-  const containerPadding = 16;
-  const gap = 12;
-  const gridCardWidth = (width - containerPadding * 2 - gap) / 2;
 
   const openNewNoteModal = (isChecklist: boolean = false) => {
     setEditingNote(null);
@@ -256,6 +336,26 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
     setInitialIsChecklist(note.isChecklist);
     setEditorOpen(true);
   };
+
+  const renderNotes = (items: NoteItem[]) => {
+    if (!isGrid) return <View style={styles.listContainer}>{items.map(renderNote)}</View>;
+    const [left, right] = splitMasonryColumns(items);
+    return <View style={styles.masonryContainer}>
+      <View style={styles.masonryColumn}>{left.map(renderNote)}</View>
+      <View style={styles.masonryColumn}>{right.map(renderNote)}</View>
+    </View>;
+  };
+
+  function renderNote(note: NoteItem) {
+    return <NoteCard
+      key={note.id}
+      note={note}
+      cardWidth={isGrid ? '100%' : '100%'}
+      onPress={() => openEditNoteModal(note)}
+      onTogglePin={() => void handleTogglePin(note)}
+      onToggleCheckItem={(itemId: string) => void handleToggleCheckItem(note, itemId)}
+    />;
+  }
 
   return (
     <View style={styles.container}>
@@ -383,18 +483,7 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
             {pinnedNotes.length > 0 ? (
               <View style={styles.sectionContainer}>
                 <Text style={styles.sectionTitle}>PINNED</Text>
-                <View style={isGrid ? styles.gridContainer : styles.listContainer}>
-                  {pinnedNotes.map((note: NoteItem) => (
-                    <NoteCard
-                      key={note.id}
-                      note={note}
-                      cardWidth={isGrid ? gridCardWidth : '100%'}
-                      onPress={() => openEditNoteModal(note)}
-                      onTogglePin={() => void handleTogglePin(note)}
-                      onToggleCheckItem={(itemId: string) => void handleToggleCheckItem(note, itemId)}
-                    />
-                  ))}
-                </View>
+                {renderNotes(pinnedNotes)}
               </View>
             ) : null}
 
@@ -402,18 +491,7 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
             {otherNotes.length > 0 ? (
               <View style={styles.sectionContainer}>
                 {pinnedNotes.length > 0 ? <Text style={styles.sectionTitle}>OTHERS</Text> : null}
-                <View style={isGrid ? styles.gridContainer : styles.listContainer}>
-                  {otherNotes.map((note: NoteItem) => (
-                    <NoteCard
-                      key={note.id}
-                      note={note}
-                      cardWidth={isGrid ? gridCardWidth : '100%'}
-                      onPress={() => openEditNoteModal(note)}
-                      onTogglePin={() => void handleTogglePin(note)}
-                      onToggleCheckItem={(itemId: string) => void handleToggleCheckItem(note, itemId)}
-                    />
-                  ))}
-                </View>
+                {renderNotes(otherNotes)}
               </View>
             ) : null}
           </View>
@@ -452,7 +530,9 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
         visible={editorOpen}
         initialNote={editingNote}
         initialIsChecklist={initialIsChecklist}
-        onClose={() => setEditorOpen(false)}
+        initialDraft={sharedDraft || undefined}
+        client={client}
+        onClose={() => { setEditorOpen(false); setSharedDraft(null); }}
         onSave={handleSaveNote}
         onDelete={handleDeleteNote}
       />
@@ -643,11 +723,11 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: 8,
   },
-  gridContainer: {
+  masonryContainer: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 12,
   },
+  masonryColumn: { flex: 1 },
   listContainer: {
     flexDirection: 'column',
     gap: 12,

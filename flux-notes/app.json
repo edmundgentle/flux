@@ -2,6 +2,7 @@
   "expo": {
     "name": "Flux Notes",
     "slug": "flux-notes",
+    "scheme": "flux-notes",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -14,6 +15,9 @@
           "NSAllowsLocalNetworking": true
         },
         "NSLocalNetworkUsageDescription": "Flux Notes connects to your Flux instance on your local network."
+        ,"NSCameraUsageDescription": "Flux Notes uses the camera to add photos and videos to notes."
+        ,"NSPhotoLibraryUsageDescription": "Flux Notes imports photos and videos into your notes."
+        ,"NSMicrophoneUsageDescription": "Flux Notes records audio attachments for notes."
       }
     },
     "android": {
@@ -29,6 +33,21 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsText": true,
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsWebPageWithMaxCount": 1,
+            "NSExtensionActivationSupportsImageWithMaxCount": 5,
+            "NSExtensionActivationSupportsFileWithMaxCount": 5
+          },
+          "androidIntentFilters": ["text/*", "image/*"]
+        }
+      ]
+    ]
   }
 }

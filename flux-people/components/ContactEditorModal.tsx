@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,9 +18,11 @@ import {
   PhoneItem,
   EmailItem,
   AddressItem,
+  SocialProfileItem,
   PhoneLabel,
   EmailLabel,
   AddressLabel,
+  SocialPlatform,
 } from '../types/contact';
 import Avatar from './Avatar';
 
@@ -36,13 +37,24 @@ const SUGGESTED_TAGS = ['Work', 'Family', 'Friends', 'VIP'];
 const PHONE_LABELS: PhoneLabel[] = ['Mobile', 'Work', 'Home', 'Main', 'Other'];
 const EMAIL_LABELS: EmailLabel[] = ['Personal', 'Work', 'Other'];
 const ADDRESS_LABELS: AddressLabel[] = ['Home', 'Work', 'Other'];
+const SOCIAL_PLATFORMS: SocialPlatform[] = [
+  'Twitter',
+  'LinkedIn',
+  'GitHub',
+  'Instagram',
+  'Facebook',
+  'Telegram',
+  'WhatsApp',
+  'Website',
+];
 
 export default function ContactEditorModal({ visible, contact, onClose, onSave }: Props) {
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
 
   const [firstName, setFirstName] = useState('');
-  const [lastName, setLastName] = useState('');
+  const [middleName, setMiddleName] = useState('');
+  const [surname, setSurname] = useState('');
   const [company, setCompany] = useState('');
   const [jobTitle, setJobTitle] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
@@ -54,12 +66,14 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
 
   const [phones, setPhones] = useState<PhoneItem[]>([]);
   const [emails, setEmails] = useState<EmailItem[]>([]);
+  const [socialProfiles, setSocialProfiles] = useState<SocialProfileItem[]>([]);
   const [addresses, setAddresses] = useState<AddressItem[]>([]);
 
   useEffect(() => {
     if (contact) {
       setFirstName(contact.firstName || '');
-      setLastName(contact.lastName || '');
+      setMiddleName(contact.middleName || '');
+      setSurname(contact.surname || contact.lastName || '');
       setCompany(contact.company || '');
       setJobTitle(contact.jobTitle || '');
       setAvatarUrl(contact.avatarUrl || '');
@@ -67,12 +81,14 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
       setNotes(contact.notes || '');
       setFavorite(Boolean(contact.favorite));
       setTags(contact.tags || []);
-      setPhones(contact.phones.length > 0 ? [...contact.phones] : [{ id: 'p_0', label: 'Mobile', number: '' }]);
-      setEmails(contact.emails.length > 0 ? [...contact.emails] : [{ id: 'e_0', label: 'Personal', email: '' }]);
+      setPhones(contact.phones && contact.phones.length > 0 ? [...contact.phones] : [{ id: 'p_0', label: 'Mobile', number: '' }]);
+      setEmails(contact.emails && contact.emails.length > 0 ? [...contact.emails] : [{ id: 'e_0', label: 'Personal', email: '' }]);
+      setSocialProfiles(contact.socialProfiles ? [...contact.socialProfiles] : []);
       setAddresses(contact.addresses ? [...contact.addresses] : []);
     } else {
       setFirstName('');
-      setLastName('');
+      setMiddleName('');
+      setSurname('');
       setCompany('');
       setJobTitle('');
       setAvatarUrl('');
@@ -82,6 +98,7 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
       setTags([]);
       setPhones([{ id: `p_${Date.now()}`, label: 'Mobile', number: '' }]);
       setEmails([{ id: `e_${Date.now()}`, label: 'Personal', email: '' }]);
+      setSocialProfiles([]);
       setAddresses([]);
     }
   }, [contact, visible]);
@@ -112,7 +129,7 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
     }
   };
 
-  // Phones management
+  // Phones
   const addPhone = () => {
     setPhones((prev) => [...prev, { id: `p_${Date.now()}`, label: 'Mobile', number: '' }]);
   };
@@ -123,7 +140,7 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
     setPhones((prev) => prev.filter((p) => p.id !== id));
   };
 
-  // Emails management
+  // Emails
   const addEmail = () => {
     setEmails((prev) => [...prev, { id: `e_${Date.now()}`, label: 'Personal', email: '' }]);
   };
@@ -134,7 +151,21 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
     setEmails((prev) => prev.filter((e) => e.id !== id));
   };
 
-  // Addresses management
+  // Social Profiles
+  const addSocialProfile = () => {
+    setSocialProfiles((prev) => [
+      ...prev,
+      { id: `s_${Date.now()}`, platform: 'Twitter', username: '', url: '' },
+    ]);
+  };
+  const updateSocialProfile = (id: string, field: keyof SocialProfileItem, val: string) => {
+    setSocialProfiles((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: val } : s)));
+  };
+  const removeSocialProfile = (id: string) => {
+    setSocialProfiles((prev) => prev.filter((s) => s.id !== id));
+  };
+
+  // Addresses
   const addAddress = () => {
     setAddresses((prev) => [
       ...prev,
@@ -148,7 +179,7 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
     setAddresses((prev) => prev.filter((a) => a.id !== id));
   };
 
-  // Tag management
+  // Tags
   const toggleTag = (tag: string) => {
     setTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
   };
@@ -161,8 +192,8 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
   };
 
   const handleSave = async () => {
-    if (!firstName.trim() && !lastName.trim() && !company.trim()) {
-      Alert.alert('Required field missing', 'Please enter a first name, last name, or company.');
+    if (!firstName.trim() && !surname.trim() && !company.trim()) {
+      Alert.alert('Required field missing', 'Please enter a first name, surname, or company.');
       return;
     }
 
@@ -170,6 +201,7 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
     try {
       const cleanPhones = phones.filter((p) => p.number.trim());
       const cleanEmails = emails.filter((e) => e.email.trim());
+      const cleanSocials = socialProfiles.filter((s) => s.username.trim() || (s.url && s.url.trim()));
       const cleanAddresses = addresses.filter(
         (a) => a.street.trim() || a.city.trim() || a.country.trim()
       );
@@ -178,7 +210,9 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
         id: contact?.id,
         path: contact?.path,
         firstName: firstName.trim(),
-        lastName: lastName.trim(),
+        middleName: middleName.trim(),
+        surname: surname.trim(),
+        lastName: surname.trim(),
         company: company.trim(),
         jobTitle: jobTitle.trim(),
         avatarUrl,
@@ -188,6 +222,7 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
         tags,
         phones: cleanPhones,
         emails: cleanEmails,
+        socialProfiles: cleanSocials,
         addresses: cleanAddresses,
         createdAt: contact?.createdAt || Date.now(),
       });
@@ -200,7 +235,7 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
     }
   };
 
-  const currentContactPreview = { firstName, lastName, company, avatarUrl };
+  const currentContactPreview = { firstName, middleName, surname, company, avatarUrl };
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -223,7 +258,7 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
         </View>
 
         <ScrollView contentContainerStyle={styles.scrollContent}>
-          {/* Avatar Selection */}
+          {/* Top Section: Avatar & Name Information */}
           <View style={styles.avatarSection}>
             <Avatar contact={currentContactPreview} size={84} />
             <Pressable style={styles.photoPickerBtn} onPress={handlePickPhoto}>
@@ -234,8 +269,11 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
             </Pressable>
           </View>
 
-          {/* Names & Work */}
           <View style={styles.cardSection}>
+            <View style={styles.sectionHeaderRow}>
+              <Ionicons name="person-outline" size={16} color="#2563eb" />
+              <Text style={styles.sectionHeader}>Name Details</Text>
+            </View>
             <TextInput
               style={styles.input}
               placeholder="First name"
@@ -246,32 +284,53 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
             <View style={styles.inputDivider} />
             <TextInput
               style={styles.input}
-              placeholder="Last name"
-              value={lastName}
-              onChangeText={setLastName}
+              placeholder="Middle names"
+              value={middleName}
+              onChangeText={setMiddleName}
               autoCapitalize="words"
             />
             <View style={styles.inputDivider} />
             <TextInput
               style={styles.input}
-              placeholder="Company"
-              value={company}
-              onChangeText={setCompany}
-              autoCapitalize="words"
-            />
-            <View style={styles.inputDivider} />
-            <TextInput
-              style={styles.input}
-              placeholder="Job title"
-              value={jobTitle}
-              onChangeText={setJobTitle}
+              placeholder="Surname / Last name"
+              value={surname}
+              onChangeText={setSurname}
               autoCapitalize="words"
             />
           </View>
 
-          {/* Phones */}
+          {/* Birthday & Notes */}
           <View style={styles.cardSection}>
-            <Text style={styles.sectionHeader}>Phone Numbers</Text>
+            <View style={styles.sectionHeaderRow}>
+              <Ionicons name="calendar-outline" size={16} color="#2563eb" />
+              <Text style={styles.sectionHeader}>Birthday & Notes</Text>
+            </View>
+            <TextInput
+              style={styles.input}
+              placeholder="Birthday (YYYY-MM-DD)"
+              value={birthday}
+              onChangeText={setBirthday}
+            />
+            <View style={styles.inputDivider} />
+            <TextInput
+              style={[styles.input, styles.textArea]}
+              placeholder="Notes..."
+              value={notes}
+              onChangeText={setNotes}
+              multiline
+              numberOfLines={4}
+              textAlignVertical="top"
+            />
+          </View>
+
+          {/* Personal Information (Phones, Emails, Social Profiles) */}
+          <View style={styles.cardSection}>
+            <View style={styles.sectionHeaderRow}>
+              <Ionicons name="call-outline" size={16} color="#2563eb" />
+              <Text style={styles.sectionHeader}>Personal Contact Details</Text>
+            </View>
+
+            {/* Phone Numbers */}
             {phones.map((phone) => (
               <View key={phone.id} style={styles.dynamicRow}>
                 <View style={styles.labelSelectorRow}>
@@ -308,11 +367,11 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
               <Ionicons name="add-circle-outline" size={20} color="#2563eb" />
               <Text style={styles.addMoreText}>Add Phone</Text>
             </Pressable>
-          </View>
 
-          {/* Emails */}
-          <View style={styles.cardSection}>
-            <Text style={styles.sectionHeader}>Email Addresses</Text>
+            <View style={styles.sectionDivider} />
+
+            {/* Email Addresses */}
+            <Text style={styles.subSectionHeader}>Email Addresses</Text>
             {emails.map((email) => (
               <View key={email.id} style={styles.dynamicRow}>
                 <View style={styles.labelSelectorRow}>
@@ -350,11 +409,76 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
               <Ionicons name="add-circle-outline" size={20} color="#2563eb" />
               <Text style={styles.addMoreText}>Add Email</Text>
             </Pressable>
+
+            <View style={styles.sectionDivider} />
+
+            {/* Social Profiles */}
+            <Text style={styles.subSectionHeader}>Social Profiles</Text>
+            {socialProfiles.map((social) => (
+              <View key={social.id} style={styles.dynamicRow}>
+                <View style={styles.labelSelectorRow}>
+                  {SOCIAL_PLATFORMS.map((plat) => (
+                    <Pressable
+                      key={plat}
+                      style={[styles.miniPill, social.platform === plat && styles.miniPillActive]}
+                      onPress={() => updateSocialProfile(social.id, 'platform', plat)}
+                    >
+                      <Text style={[styles.miniPillText, social.platform === plat && styles.miniPillTextActive]}>
+                        {plat}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <View style={styles.rowInputWithDelete}>
+                  <TextInput
+                    style={[styles.input, { flex: 1 }]}
+                    placeholder="Username / Handle (e.g. @john_doe)"
+                    value={social.username}
+                    onChangeText={(val) => updateSocialProfile(social.id, 'username', val)}
+                    autoCapitalize="none"
+                  />
+                  <Pressable onPress={() => removeSocialProfile(social.id)} hitSlop={6}>
+                    <Ionicons name="remove-circle-outline" size={22} color="#dc2626" />
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+
+            <Pressable style={styles.addMoreBtn} onPress={addSocialProfile}>
+              <Ionicons name="logo-twitter" size={18} color="#2563eb" />
+              <Text style={styles.addMoreText}>Add Social Profile</Text>
+            </Pressable>
+          </View>
+
+          {/* Work Section */}
+          <View style={styles.cardSection}>
+            <View style={styles.sectionHeaderRow}>
+              <Ionicons name="briefcase-outline" size={16} color="#2563eb" />
+              <Text style={styles.sectionHeader}>Work Information</Text>
+            </View>
+            <TextInput
+              style={styles.input}
+              placeholder="Company / Organization"
+              value={company}
+              onChangeText={setCompany}
+              autoCapitalize="words"
+            />
+            <View style={styles.inputDivider} />
+            <TextInput
+              style={styles.input}
+              placeholder="Job Title"
+              value={jobTitle}
+              onChangeText={setJobTitle}
+              autoCapitalize="words"
+            />
           </View>
 
           {/* Addresses */}
           <View style={styles.cardSection}>
-            <Text style={styles.sectionHeader}>Addresses</Text>
+            <View style={styles.sectionHeaderRow}>
+              <Ionicons name="location-outline" size={16} color="#2563eb" />
+              <Text style={styles.sectionHeader}>Addresses</Text>
+            </View>
             {addresses.map((addr) => (
               <View key={addr.id} style={styles.dynamicRow}>
                 <View style={styles.labelSelectorRow}>
@@ -464,26 +588,6 @@ export default function ContactEditorModal({ visible, contact, onClose, onSave }
             ) : null}
           </View>
 
-          {/* Birthday & Notes */}
-          <View style={styles.cardSection}>
-            <TextInput
-              style={styles.input}
-              placeholder="Birthday (YYYY-MM-DD)"
-              value={birthday}
-              onChangeText={setBirthday}
-            />
-            <View style={styles.inputDivider} />
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              placeholder="Notes..."
-              value={notes}
-              onChangeText={setNotes}
-              multiline
-              numberOfLines={4}
-              textAlignVertical="top"
-            />
-          </View>
-
           {/* Favorite Toggle */}
           <Pressable
             style={styles.favoriteRow}
@@ -564,13 +668,30 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e2e8f0',
   },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 10,
+  },
   sectionHeader: {
     fontSize: 13,
     fontWeight: '700',
     color: '#64748b',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-    marginBottom: 10,
+  },
+  subSectionHeader: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: '#e2e8f0',
+    marginVertical: 12,
   },
   input: {
     fontSize: 15,
@@ -709,3 +830,4 @@ const styles = StyleSheet.create({
     color: '#0f172a',
   },
 });
+

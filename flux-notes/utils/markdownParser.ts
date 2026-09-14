@@ -1,4 +1,4 @@
-import { ChecklistItem, NoteColorId, NoteItem } from '../types/note';
+import { ChecklistItem, NoteAttachment, NoteColorId, NoteItem } from '../types/note';
 
 export function parseNoteMarkdown(rawContent: string, filePath: string, fileDateCreated?: number): NoteItem {
   let frontmatterText = '';
@@ -49,10 +49,12 @@ export function parseNoteMarkdown(rawContent: string, filePath: string, fileDate
     }
   }
 
-  const pinned = metaMap.pinned === 'true';
-  const archived = metaMap.archived === 'true';
+  const pinned = parseBoolean(metaMap.pinned);
+  const archived = parseBoolean(metaMap.archived);
   const color = (metaMap.color || 'default') as NoteColorId;
-  const isChecklist = metaMap.isChecklist === 'true' || checkHasChecklistItems(bodyText);
+  // A note may contain checkbox lines without becoming a dedicated checklist.
+  // Dedicated checklist mode is an editor preference persisted in frontmatter.
+  const isChecklist = parseBoolean(metaMap.isChecklist);
 
   let labels: string[] = [];
   if (metaMap.labels) {
@@ -64,6 +66,13 @@ export function parseNoteMarkdown(rawContent: string, filePath: string, fileDate
     } catch {
       labels = metaMap.labels.split(',').map((s) => s.trim()).filter(Boolean);
     }
+  }
+  let attachments: NoteAttachment[] = [];
+  if (metaMap.attachments) {
+    try {
+      const parsed = JSON.parse(metaMap.attachments);
+      if (Array.isArray(parsed)) attachments = parsed;
+    } catch { /* old notes have no attachments */ }
   }
 
   const now = Date.now();
@@ -78,21 +87,34 @@ export function parseNoteMarkdown(rawContent: string, filePath: string, fileDate
     id,
     path: filePath,
     title: title || 'Untitled Note',
-    content: bodyText,
+    content: removeDuplicatedTitleHeading(bodyText, title),
     isChecklist,
     checklistItems,
     pinned,
     color,
     labels,
+    attachments,
     createdAt,
     updatedAt,
     archived,
   };
 }
 
-function checkHasChecklistItems(text: string): boolean {
-  const lineRegex = /^\s*[-*]\s*\[([ xX])\]\s*(.*)$/m;
-  return lineRegex.test(text);
+function parseBoolean(value?: string): boolean {
+  return value?.trim().replace(/^['"]|['"]$/g, '').toLowerCase() === 'true';
+}
+
+function removeDuplicatedTitleHeading(body: string, title: string): string {
+  const lines = body.split('\n');
+  const firstContentIndex = lines.findIndex((line) => line.trim().length > 0);
+  if (firstContentIndex === -1) return body;
+
+  const firstLine = lines[firstContentIndex].trim();
+  if (firstLine === `# ${title}`) {
+    lines.splice(firstContentIndex, 1);
+    if (lines[firstContentIndex] === '') lines.splice(firstContentIndex, 1);
+  }
+  return lines.join('\n').trim();
 }
 
 export function parseChecklistItems(text: string): ChecklistItem[] {
@@ -150,6 +172,7 @@ export function serializeNoteMarkdown(note: Partial<NoteItem> & { title: string 
     `color: ${color}`,
     `isChecklist: ${isChecklist}`,
     `labels: ${JSON.stringify(labels)}`,
+    `attachments: ${JSON.stringify(note.attachments || [])}`,
     `createdAt: ${createdAt}`,
     `updatedAt: ${updatedAt}`,
   ];
@@ -160,10 +183,7 @@ export function serializeNoteMarkdown(note: Partial<NoteItem> & { title: string 
 
   const frontmatterStr = `---\n${frontmatterObj.join('\n')}\n---`;
 
-  let titleHeader = '';
-  if (note.title && !body.startsWith('# ')) {
-    titleHeader = `# ${note.title}\n\n`;
-  }
-
-  return `${frontmatterStr}\n\n${titleHeader}${body}`.trim();
+  // The title belongs in frontmatter and is rendered by the app. Keeping a
+  // second H1 in the body duplicates it in cards and the editor.
+  return `${frontmatterStr}\n\n${body}`.trim();
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,14 +12,23 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { ChecklistItem, NOTE_COLORS, NoteColorId, NoteItem } from '../types/note';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import { RecordingPresets, requestRecordingPermissionsAsync, useAudioRecorder, useAudioRecorderState } from 'expo-audio';
+import { ChecklistItem, NOTE_COLORS, NoteAttachment, NoteColorId, NoteItem } from '../types/note';
 import ColorPicker from './ColorPicker';
-import MarkdownView from './MarkdownView';
+import Popover from './Popover';
+import AudioAttachmentView from './AudioAttachmentView';
+import VisualNoteEditor, { VisualNoteEditorHandle } from './VisualNoteEditor';
+import { transcribeAudio } from '../utils/transcribe';
+import type { FluxClient } from '@flux-sdk/core';
 
 type Props = {
   visible: boolean;
   initialNote: NoteItem | null; // null means create new note
   initialIsChecklist?: boolean;
+  initialDraft?: { title?: string; content?: string; attachments?: NoteAttachment[] };
+  client?: FluxClient;
   onClose: () => void;
   onSave: (note: Partial<NoteItem> & { title: string }) => Promise<void>;
   onDelete?: (noteId: string, path: string) => Promise<void>;
@@ -29,6 +38,8 @@ export default function NoteEditorModal({
   visible,
   initialNote,
   initialIsChecklist = false,
+  initialDraft,
+  client,
   onClose,
   onSave,
   onDelete,
@@ -42,11 +53,25 @@ export default function NoteEditorModal({
   const [pinned, setPinned] = useState(false);
   const [color, setColor] = useState<NoteColorId>('default');
   const [labels, setLabels] = useState<string[]>([]);
+  const [attachments, setAttachments] = useState<NoteAttachment[]>([]);
+  const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
+  const recorderState = useAudioRecorderState(recorder, 100);
+  const meterSamplesRef = useRef<number[]>([]);
+  const editorRef = useRef<VisualNoteEditorHandle>(null);
   const [newLabelText, setNewLabelText] = useState('');
   const [showLabelInput, setShowLabelInput] = useState(false);
-  const [previewMode, setPreviewMode] = useState(false);
+  const [showFormatting, setShowFormatting] = useState(false);
+  const [showColors, setShowColors] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    if (recorderState.isRecording && typeof recorderState.metering === 'number') {
+      // dB metering (~-160..0) normalised to 0..1 bar heights for the waveform.
+      const normalized = Math.max(0, Math.min(1, (recorderState.metering + 60) / 60));
+      meterSamplesRef.current.push(normalized);
+    }
+  }, [recorderState.isRecording, recorderState.metering]);
 
   useEffect(() => {
     if (visible) {
@@ -58,21 +83,24 @@ export default function NoteEditorModal({
         setPinned(initialNote.pinned);
         setColor(initialNote.color || 'default');
         setLabels(initialNote.labels ? [...initialNote.labels] : []);
+        setAttachments(initialNote.attachments ? [...initialNote.attachments] : []);
       } else {
-        setTitle('');
-        setContent('');
+        setTitle(initialDraft?.title || '');
+        setContent(initialDraft?.content || '');
         setIsChecklist(initialIsChecklist);
         setChecklistItems([]);
         setPinned(false);
         setColor('default');
         setLabels([]);
+        setAttachments(initialDraft?.attachments ? [...initialDraft.attachments] : []);
       }
       setNewItemText('');
       setNewLabelText('');
       setShowLabelInput(false);
-      setPreviewMode(false);
+      setShowFormatting(false);
+      setShowColors(false);
     }
-  }, [visible, initialNote, initialIsChecklist]);
+  }, [visible, initialNote, initialIsChecklist, initialDraft]);
 
   const theme = NOTE_COLORS[color] || NOTE_COLORS.default;
 
@@ -106,6 +134,77 @@ export default function NoteEditorModal({
     setShowLabelInput(false);
   };
 
+  const addAttachment = (attachment: Omit<NoteAttachment, 'id'>) => {
+    const item = { ...attachment, id: `attachment_${Date.now()}_${attachments.length}` };
+    setAttachments((current) => [...current, item]);
+    // Audio clips render inline via their waveform player, not as a markdown link.
+    if (attachment.kind === 'audio') return item.id;
+    const markdown = attachment.kind === 'image'
+      ? `![${attachment.name}](${attachment.uri})`
+      : `[${attachment.name}](${attachment.uri})`;
+    setContent((current) => `${current}${current.trim() ? '\n\n' : ''}${markdown}`);
+    return item.id;
+  };
+
+  const pickMedia = async (camera = false) => {
+    if (camera) {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) return Alert.alert('Camera permission required');
+    }
+    const result = camera
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images', 'videos'], quality: 0.8 })
+      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.8 });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    addAttachment({ name: asset.fileName || `media-${Date.now()}`, uri: asset.uri, mimeType: asset.mimeType || 'application/octet-stream', kind: asset.type === 'video' ? 'video' : 'image' });
+  };
+
+  const importFile = async () => {
+    const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, multiple: false });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    addAttachment({ name: asset.name, uri: asset.uri, mimeType: asset.mimeType || 'application/octet-stream', kind: 'file' });
+  };
+
+  const toggleRecording = async () => {
+    if (recorder.isRecording) {
+      const durationMs = recorder.currentTime * 1000;
+      await recorder.stop();
+      const waveform = meterSamplesRef.current;
+      meterSamplesRef.current = [];
+      if (recorder.uri) {
+        const attachmentId = addAttachment({
+          name: `recording-${Date.now()}.m4a`,
+          uri: recorder.uri,
+          mimeType: 'audio/m4a',
+          kind: 'audio',
+          waveform,
+          durationMs,
+          transcriptStatus: 'pending',
+        });
+        void transcribeIfPossible(attachmentId, recorder.uri);
+      }
+      return;
+    }
+    const permission = await requestRecordingPermissionsAsync();
+    if (!permission.granted) return Alert.alert('Microphone permission required');
+    meterSamplesRef.current = [];
+    await recorder.prepareToRecordAsync();
+    recorder.record();
+  };
+
+  const transcribeIfPossible = async (attachmentId: string, uri: string) => {
+    const session = client?.getAuthSession();
+    if (!session) {
+      setAttachments((current) => current.map((a) => a.id === attachmentId ? { ...a, transcriptStatus: 'error' } : a));
+      return;
+    }
+    const transcript = await transcribeAudio(uri, 'audio/m4a', session.token, session.instanceId);
+    setAttachments((current) => current.map((a) => a.id === attachmentId
+      ? { ...a, transcript: transcript || undefined, transcriptStatus: transcript ? 'ready' : 'error' }
+      : a));
+  };
+
   const handleRemoveLabel = (labelToRemove: string) => {
     setLabels((prev: string[]) => prev.filter((l: string) => l !== labelToRemove));
   };
@@ -132,6 +231,7 @@ export default function NoteEditorModal({
         pinned,
         color,
         labels,
+        attachments,
         createdAt: initialNote?.createdAt,
       });
       onClose();
@@ -166,12 +266,9 @@ export default function NoteEditorModal({
     ]);
   };
 
-  const insertMarkdownSyntax = (prefix: string, suffix: string = '') => {
-    setContent((prev: string) => `${prev}\n${prefix}${suffix}`);
-  };
-
   const uncompletedItems = checklistItems.filter((i) => !i.completed);
   const completedItems = checklistItems.filter((i) => i.completed);
+  const audioAttachments = attachments.filter((a) => a.kind === 'audio');
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -194,15 +291,18 @@ export default function NoteEditorModal({
               />
             </Pressable>
             <Pressable
-              onPress={() => setPreviewMode((prev: boolean) => !prev)}
+              onPress={() => setShowFormatting((prev: boolean) => !prev)}
               style={styles.headerIconBtn}
               hitSlop={8}
             >
               <Ionicons
-                name={previewMode ? 'create-outline' : 'eye-outline'}
+                name="text-outline"
                 size={22}
                 color={theme.text}
               />
+            </Pressable>
+            <Pressable onPress={() => setShowColors((prev: boolean) => !prev)} style={styles.headerIconBtn} hitSlop={8}>
+              <Ionicons name="color-palette-outline" size={22} color={theme.text} />
             </Pressable>
             <Pressable onPress={() => setPinned((prev: boolean) => !prev)} style={styles.headerIconBtn} hitSlop={8}>
               <Ionicons
@@ -279,13 +379,8 @@ export default function NoteEditorModal({
             )}
           </View>
 
-          {/* Mode Switch: Preview vs Edit vs Checklist */}
-          {previewMode ? (
-            <View style={styles.previewContainer}>
-              <Text style={[styles.sectionHeading, { color: theme.secondaryText }]}>Live Preview</Text>
-              <MarkdownView content={content} theme={theme} />
-            </View>
-          ) : isChecklist ? (
+          {/* Mode Switch: Edit vs Checklist */}
+          {isChecklist ? (
             <View style={styles.checklistSection}>
               <Text style={[styles.sectionHeading, { color: theme.secondaryText }]}>
                 List Items ({checklistItems.length})
@@ -354,46 +449,61 @@ export default function NoteEditorModal({
             </View>
           ) : (
             <View style={styles.textEditorSection}>
-              {/* Markdown Toolbar */}
-              <View style={[styles.formattingBar, { borderBottomColor: theme.border }]}>
-                <Pressable style={styles.toolBtn} onPress={() => insertMarkdownSyntax('# ')}>
-                  <Text style={[styles.toolBtnText, { color: theme.text }]}>H1</Text>
-                </Pressable>
-                <Pressable style={styles.toolBtn} onPress={() => insertMarkdownSyntax('## ')}>
-                  <Text style={[styles.toolBtnText, { color: theme.text }]}>H2</Text>
-                </Pressable>
-                <Pressable style={styles.toolBtn} onPress={() => insertMarkdownSyntax('**', '**')}>
-                  <Text style={[styles.toolBtnText, { color: theme.text, fontWeight: '700' }]}>B</Text>
-                </Pressable>
-                <Pressable style={styles.toolBtn} onPress={() => insertMarkdownSyntax('*', '*')}>
-                  <Text style={[styles.toolBtnText, { color: theme.text, fontStyle: 'italic' }]}>I</Text>
-                </Pressable>
-                <Pressable style={styles.toolBtn} onPress={() => insertMarkdownSyntax('- ')}>
-                  <Ionicons name="list" size={16} color={theme.text} />
-                </Pressable>
-                <Pressable style={styles.toolBtn} onPress={() => insertMarkdownSyntax('- [ ] ')}>
-                  <Ionicons name="checkbox-outline" size={16} color={theme.text} />
-                </Pressable>
-                <Pressable style={styles.toolBtn} onPress={() => insertMarkdownSyntax('`', '`')}>
-                  <Ionicons name="code-slash" size={16} color={theme.text} />
-                </Pressable>
-              </View>
-
-              <TextInput
-                value={content}
-                onChangeText={setContent}
-                placeholder="Note text (Markdown supported)..."
-                placeholderTextColor={theme.secondaryText}
-                style={[styles.contentInput, { color: theme.text }]}
-                multiline
-                textAlignVertical="top"
-              />
+              <VisualNoteEditor ref={editorRef} value={content} onChange={setContent} theme={theme} />
+              {audioAttachments.map((attachment) => (
+                <AudioAttachmentView
+                  key={attachment.id}
+                  uri={attachment.uri}
+                  name={attachment.name}
+                  waveform={attachment.waveform}
+                  durationMs={attachment.durationMs}
+                  transcript={attachment.transcript}
+                  transcriptStatus={attachment.transcriptStatus}
+                  theme={theme}
+                />
+              ))}
             </View>
           )}
-
-          {/* Color Picker */}
-          <ColorPicker selectedColor={color} onSelectColor={setColor} />
         </ScrollView>
+
+        <Popover visible={showFormatting} onClose={() => setShowFormatting(false)}>
+          <View style={styles.formattingBar}>
+            <Pressable style={styles.toolBtn} onPress={() => editorRef.current?.addBlock('heading1')}>
+              <Text style={[styles.toolBtnText, { color: theme.text }]}>H1</Text>
+            </Pressable>
+            <Pressable style={styles.toolBtn} onPress={() => editorRef.current?.addBlock('heading2')}>
+              <Text style={[styles.toolBtnText, { color: theme.text }]}>H2</Text>
+            </Pressable>
+            <Pressable style={styles.toolBtn} onPress={() => editorRef.current?.toggleStyle('bold')}>
+              <Text style={[styles.toolBtnText, { color: theme.text, fontWeight: '700' }]}>B</Text>
+            </Pressable>
+            <Pressable style={styles.toolBtn} onPress={() => editorRef.current?.toggleStyle('italic')}>
+              <Text style={[styles.toolBtnText, { color: theme.text, fontStyle: 'italic' }]}>I</Text>
+            </Pressable>
+            <Pressable style={styles.toolBtn} onPress={() => editorRef.current?.addBlock('bullet')}>
+              <Ionicons name="list" size={16} color={theme.text} />
+            </Pressable>
+            <Pressable style={styles.toolBtn} onPress={() => editorRef.current?.addBlock('checkbox')}>
+              <Ionicons name="checkbox-outline" size={16} color={theme.text} />
+            </Pressable>
+            <Pressable style={styles.toolBtn} onPress={() => void pickMedia(false)}>
+              <Ionicons name="images-outline" size={16} color={theme.text} />
+            </Pressable>
+            <Pressable style={styles.toolBtn} onPress={() => void pickMedia(true)}>
+              <Ionicons name="camera-outline" size={16} color={theme.text} />
+            </Pressable>
+            <Pressable style={styles.toolBtn} onPress={() => void importFile()}>
+              <Ionicons name="attach-outline" size={16} color={theme.text} />
+            </Pressable>
+            <Pressable style={styles.toolBtn} onPress={() => void toggleRecording()}>
+              <Ionicons name={recorder.isRecording ? 'stop-circle-outline' : 'mic-outline'} size={16} color={recorder.isRecording ? '#dc2626' : theme.text} />
+            </Pressable>
+          </View>
+        </Popover>
+
+        <Popover visible={showColors} onClose={() => setShowColors(false)}>
+          <ColorPicker selectedColor={color} onSelectColor={(id) => { setColor(id); setShowColors(false); }} />
+        </Popover>
       </View>
     </Modal>
   );
@@ -493,10 +603,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: 8,
   },
-  previewContainer: {
-    minHeight: 200,
-    marginBottom: 16,
-  },
   checklistSection: {
     marginBottom: 16,
   },
@@ -549,11 +655,10 @@ const styles = StyleSheet.create({
   },
   formattingBar: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    marginBottom: 12,
+    maxWidth: 260,
   },
   toolBtn: {
     paddingHorizontal: 10,

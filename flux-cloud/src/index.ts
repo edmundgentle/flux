@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { loadConfig } from './config';
-import { TunnelRegistry, sendEnvelope, isJsonEnvelope, parseProxyRequest, makeProxyResponse } from './relay';
+import { TunnelRegistry, SharedRelay, sendEnvelope, isJsonEnvelope, parseProxyRequest, makeProxyResponse } from './relay';
 import { ProxyRequest, RelayEnvelope, ProxyResponse } from './types';
 import { UserStore } from './users';
 
@@ -12,7 +12,6 @@ const registry = new TunnelRegistry();
 const userStore = new UserStore(config.databaseUrl);
 const app = express();
 app.set('trust proxy', process.env.TRUST_PROXY === 'true');
-const wsTickets = new Map<string, { instanceId: string; user: string; expiresAt: number }>();
 const rateLimitBuckets = new Map<string, { startedAt: number; count: number }>();
 
 function rateLimit(windowMs: number, maxRequests: number): express.RequestHandler {
@@ -55,6 +54,8 @@ function signRelayUser(tunnelToken: string, instanceId: string, requestId: strin
     .update(`${instanceId}\n${requestId}\n${user}`)
     .digest('hex');
 }
+
+const relay = new SharedRelay(config.redisUrl, registry, signRelayUser);
 
 app.use((req, res, next) => {
   const origin = req.header('origin');
@@ -100,25 +101,22 @@ const requireInstanceToken = async (req: express.Request, res: express.Response,
   next();
 };
 
-app.post('/api/auth/ws-ticket', authRateLimit, requireAccessToken, (req, res) => {
+app.post('/api/auth/ws-ticket', authRateLimit, requireAccessToken, async (req, res) => {
   const ticket = crypto.randomBytes(32).toString('hex');
-  wsTickets.set(ticket, { instanceId: res.locals.instanceId, user: res.locals.user, expiresAt: Date.now() + 60_000 });
-  res.json({ success: true, data: { ticket } });
+  try {
+    await relay.createWsTicket(ticket, res.locals.instanceId, res.locals.user);
+    res.json({ success: true, data: { ticket } });
+  } catch {
+    res.status(503).json({ success: false, message: 'Relay coordination unavailable' });
+  }
 });
 
 // The relay signs the authenticated cloud user before forwarding this to the instance.
 // The local token never becomes a cloud credential and is only used for LAN requests.
 app.post('/api/auth/local-session', authRateLimit, requireAccessToken, proxyToInstance);
 
-const ticketCleanup = setInterval(() => {
-  const now = Date.now();
-  for (const [ticket, entry] of wsTickets) {
-    if (entry.expiresAt <= now) wsTickets.delete(ticket);
-  }
-}, 60_000);
-ticketCleanup.unref();
-
 const tunnelHeartbeat = setInterval(() => {
+  void relay.renewTunnels();
   const now = Date.now();
   for (const tunnel of registry.list()) {
     if (now - tunnel.lastSeen > 90_000 || tunnel.socket.readyState !== WebSocket.OPEN) {
@@ -131,28 +129,15 @@ const tunnelHeartbeat = setInterval(() => {
 }, 30_000);
 tunnelHeartbeat.unref();
 
-function consumeWsTicket(instanceId: string, ticket: string): string | undefined {
-  const entry = wsTickets.get(ticket);
-  wsTickets.delete(ticket);
-  if (!entry || entry.instanceId !== instanceId || entry.expiresAt <= Date.now()) return undefined;
-  return entry.user;
-}
-
 function assertConfiguredRelayRuntime(): void {
-  if (!config.databaseUrl || !config.port || !config.host) {
-    throw new Error('Relay runtime is not configured: DATABASE_URL, PORT, and HOST must be set');
+  if (!config.databaseUrl || !config.redisUrl || !config.port || !config.host) {
+    throw new Error('Relay runtime is not configured: DATABASE_URL, REDIS_URL, PORT, and HOST must be set');
   }
 }
 
 async function proxyToInstance(req: express.Request, res: express.Response): Promise<void> {
   const instanceId = String(res.locals.instanceId || req.query.instance_id || req.header('x-instance-id') || '');
-  const tunnel = registry.get(instanceId);
-  if (!tunnel) {
-    res.status(503).json({ success: false, message: 'No active tunnel for instance' });
-    return;
-  }
-
-  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const requestId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const headers: Record<string, string> = Object.fromEntries(
     Object.entries(req.headers)
       .flatMap(([name, value]) => {
@@ -178,50 +163,10 @@ async function proxyToInstance(req: express.Request, res: express.Response): Pro
     query: safeQuery,
     body: req.body,
     user: res.locals.user,
-    userSignature: signRelayUser(tunnel.tunnelToken, instanceId, requestId, res.locals.user),
   };
-
-  const envelope: RelayEnvelope<ProxyRequest> = {
-    type: 'proxy_request',
-    instanceId,
-    requestId,
-    payload: proxyRequest,
-    ts: Date.now(),
-  };
-
-  const responsePromise = new Promise<ProxyResponse>((resolve, reject) => {
-    const socket = tunnel.socket;
-    const listener = (message: unknown) => {
-      try {
-        const text = messageText(message);
-        if (!text) return;
-        const obj = JSON.parse(text);
-        if (!isJsonEnvelope(obj)) return;
-        if (obj.type === 'proxy_response' && obj.requestId === requestId) {
-          socket.off('message', listener);
-          resolve((obj.payload as ProxyResponse) || { status: 200, body: {} });
-          return;
-        }
-        if (obj.type === 'error' && obj.requestId === requestId) {
-          socket.off('message', listener);
-          reject(new Error(obj.error || 'Proxy failed'));
-        }
-      } catch {
-        // ignore invalid messages
-      }
-    };
-
-    socket.on('message', listener);
-    sendEnvelope(socket, envelope);
-
-    setTimeout(() => {
-      socket.off('message', listener);
-      reject(new Error('Proxy request timeout'));
-    }, 30000);
-  });
 
   try {
-    const payload = await responsePromise;
+    const payload = await relay.request(instanceId, requestId, proxyRequest, res.locals.user);
     if (payload.headers) {
       for (const [name, value] of Object.entries(payload.headers)) {
         res.setHeader(name, value);
@@ -246,6 +191,43 @@ app.get('/health', async (_req, res) => {
     res.status(503).json({ ok: false });
   }
 });
+
+const OEMBED_ENDPOINTS: Array<{ test: RegExp; endpoint: (url: string) => string }> = [
+  { test: /(^|\.)youtube\.com|youtu\.be/i, endpoint: (u) => `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(u)}` },
+  { test: /vimeo\.com/i, endpoint: (u) => `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(u)}` },
+  { test: /soundcloud\.com/i, endpoint: (u) => `https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(u)}` },
+  { test: /open\.spotify\.com/i, endpoint: (u) => `https://open.spotify.com/oembed?url=${encodeURIComponent(u)}` },
+  { test: /codepen\.io/i, endpoint: (u) => `https://codepen.io/api/oembed?format=json&url=${encodeURIComponent(u)}` },
+  { test: /flickr\.com/i, endpoint: (u) => `https://www.flickr.com/services/oembed?format=json&url=${encodeURIComponent(u)}` },
+  { test: /twitter\.com|x\.com/i, endpoint: (u) => `https://publish.twitter.com/oembed?url=${encodeURIComponent(u)}` },
+];
+
+async function resolveOEmbed(url: string): Promise<unknown | null> {
+  const provider = OEMBED_ENDPOINTS.find((p) => p.test.test(url));
+  const endpoint = provider ? provider.endpoint(url) : null;
+  if (!endpoint) return null;
+  const response = await fetch(endpoint);
+  if (!response.ok) return null;
+  return response.json();
+}
+
+async function transcribeWithWhisper(apiKey: string, audioBase64: string, mimeType: string, filename: string): Promise<string> {
+  const buffer = Buffer.from(audioBase64, 'base64');
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: mimeType }), filename);
+  form.append('model', 'whisper-1');
+  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiKey}` },
+    body: form,
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Whisper API error (${response.status}): ${text.slice(0, 200)}`);
+  }
+  const json = await response.json() as { text?: string };
+  return json.text || '';
+}
 
 app.post('/api/instances/provision', provisionRateLimit, async (req, res) => {
   const { label } = req.body ?? {};
@@ -391,6 +373,49 @@ app.post('/api/shares/share', requireAccessToken, proxyToInstance);
 app.post('/api/shares/unshare', requireAccessToken, proxyToInstance);
 app.get('/api/shares/list', requireAccessToken, proxyToInstance);
 
+// Public oEmbed proxy: used as a fallback when a client can't reach a provider's
+// oEmbed endpoint directly (e.g. web builds blocked by CORS).
+app.get('/api/oembed', authRateLimit, async (req, res) => {
+  const url = typeof req.query.url === 'string' ? req.query.url : undefined;
+  if (!url || !/^https?:\/\//i.test(url)) {
+    res.status(400).json({ success: false, message: 'A valid url query parameter is required' });
+    return;
+  }
+  try {
+    const data = await resolveOEmbed(url);
+    if (!data) {
+      res.status(404).json({ success: false, message: 'No oEmbed data available for this url' });
+      return;
+    }
+    res.json(data);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to resolve oEmbed data';
+    res.status(502).json({ success: false, message });
+  }
+});
+
+// Audio transcription for note voice clips. Requires OPENAI_API_KEY; without it
+// clients keep the recording and simply skip the transcript.
+app.post('/api/transcribe', authRateLimit, requireAccessToken, async (req, res) => {
+  const { audioBase64, mimeType, filename } = req.body ?? {};
+  if (typeof audioBase64 !== 'string' || !audioBase64) {
+    res.status(400).json({ success: false, message: 'audioBase64 is required' });
+    return;
+  }
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    res.status(503).json({ success: false, message: 'Transcription is not configured on this server' });
+    return;
+  }
+  try {
+    const transcript = await transcribeWithWhisper(apiKey, audioBase64, typeof mimeType === 'string' ? mimeType : 'audio/m4a', typeof filename === 'string' ? filename : 'audio.m4a');
+    res.json({ success: true, data: { transcript } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Transcription failed';
+    res.status(502).json({ success: false, message });
+  }
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: config.wsPath });
 
@@ -399,10 +424,10 @@ const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(rateLimitCleanup);
-  clearInterval(ticketCleanup);
   clearInterval(tunnelHeartbeat);
   for (const client of wss.clients) client.close(1001, 'Server shutting down');
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  await relay.close();
   await userStore.close();
 };
 process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
@@ -423,7 +448,7 @@ wss.on('connection', async (socket, request) => {
   }
 
   const isTunnel = Boolean(tunnelToken && await userStore.verifyToken(instanceId, tunnelToken));
-  const clientUser = (wsTicket && consumeWsTicket(instanceId, wsTicket))
+  const clientUser = (wsTicket && await relay.consumeWsTicket(instanceId, wsTicket))
     || (accessToken ? await userStore.getAccessTokenUser(instanceId, accessToken) : undefined);
   const isClient = Boolean(clientUser);
   if (!isTunnel && !isClient) {
@@ -434,6 +459,7 @@ wss.on('connection', async (socket, request) => {
   try {
     if (isTunnel) {
       registry.register(instanceId, socket, tunnelToken!);
+      await relay.claimTunnel(instanceId);
       sendEnvelope(socket, { type: 'hello', instanceId, ts: Date.now() });
     }
 
@@ -444,7 +470,6 @@ wss.on('connection', async (socket, request) => {
         const parsed = JSON.parse(message) as RelayEnvelope;
         if (!isJsonEnvelope(parsed)) return;
         if (parsed.type === 'proxy_response') {
-          socket.send(message);
           return;
         }
         if (parsed.type === 'proxy_request') {
@@ -454,52 +479,16 @@ wss.on('connection', async (socket, request) => {
             return;
           }
 
-          const tunnel = registry.get(instanceId);
-          if (!tunnel || tunnel.socket === socket) {
-            sendEnvelope(socket, { type: 'error', requestId: parsed.requestId, instanceId, error: 'No active tunnel for instance', ts: Date.now() });
-            return;
-          }
-
-          const requestId = parsed.requestId || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-          const relayRequest: RelayEnvelope<ProxyRequest> = {
-            type: 'proxy_request',
-            instanceId,
-            requestId,
-              payload: {
-                ...proxyRequest,
-                user: clientUser,
-                userSignature: signRelayUser(tunnel.tunnelToken, instanceId, requestId, clientUser!),
-              },
-            ts: Date.now(),
-          };
-
-          const responseListener = (message: unknown) => {
-            try {
-              const text = messageText(message);
-              if (!text) return;
-              const obj = JSON.parse(text);
-              if (!isJsonEnvelope(obj)) return;
-              if (obj.type === 'proxy_response' && obj.requestId === requestId) {
-                tunnel.socket.off('message', responseListener);
-                socket.send(text);
-                return;
-              }
-              if (obj.type === 'error' && obj.requestId === requestId) {
-                tunnel.socket.off('message', responseListener);
-                socket.send(text);
-              }
-            } catch {
-              // ignore malformed relay traffic
-            }
-          };
-
-          tunnel.socket.on('message', responseListener);
-          sendEnvelope(tunnel.socket, relayRequest);
-
-          setTimeout(() => {
-            tunnel.socket.off('message', responseListener);
-            sendEnvelope(socket, { type: 'error', requestId, instanceId, error: 'Proxy request timeout', ts: Date.now() });
-          }, 30000);
+          const requestId = parsed.requestId || `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          void relay.request(instanceId, requestId, proxyRequest, clientUser!)
+            .then((payload) => sendEnvelope(socket, makeProxyResponse(payload, requestId, instanceId)))
+            .catch((error) => sendEnvelope(socket, {
+              type: 'error',
+              requestId,
+              instanceId,
+              error: error instanceof Error ? error.message : 'Proxy failed',
+              ts: Date.now(),
+            }));
         }
       } catch (error) {
         sendEnvelope(socket, { type: 'error', instanceId, error: error instanceof Error ? error.message : 'Unknown error', ts: Date.now() });
@@ -508,12 +497,18 @@ wss.on('connection', async (socket, request) => {
 
     socket.on('close', (code, reason) => {
       console.warn(`Instance ${instanceId} WebSocket closed ${isTunnel ? 'tunnel' : 'client'} code=${code} reason=${reason.toString() || 'none'}`);
-      if (isTunnel) registry.unregister(instanceId);
+      if (isTunnel && registry.get(instanceId)?.socket === socket) {
+        registry.unregister(instanceId);
+        void relay.releaseTunnel(instanceId);
+      }
     });
 
     socket.on('error', (error) => {
       console.error(`Instance ${instanceId} WebSocket error ${isTunnel ? 'tunnel' : 'client'}`, error);
-      if (isTunnel) registry.unregister(instanceId);
+      if (isTunnel && registry.get(instanceId)?.socket === socket) {
+        registry.unregister(instanceId);
+        void relay.releaseTunnel(instanceId);
+      }
     });
 
     console.log(`Instance ${instanceId} connected via WebSocket ${isTunnel ? 'tunnel' : 'client'}`);
@@ -526,7 +521,7 @@ wss.on('connection', async (socket, request) => {
 
 try {
   assertConfiguredRelayRuntime();
-  userStore.init()
+  Promise.all([userStore.init(), relay.start()])
     .then(() => {
       server.listen(config.port, config.host, () => {
         console.log(`Flux Cloud Relay listening on http://${config.host}:${config.port}${config.wsPath}`);

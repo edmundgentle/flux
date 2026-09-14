@@ -4,15 +4,17 @@ import {
   Linking,
   Modal,
   Pressable,
+  SafeAreaView,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { ContactItem, PhoneItem, EmailItem, AddressItem } from '../types/contact';
-import { generateVCard } from '../utils/contactUtils';
+import { ContactItem, PhoneItem, EmailItem, AddressItem, SocialProfileItem } from '../types/contact';
+import { generateVCard, openPhoneDeepLink, openSocialDeepLink } from '../utils/contactUtils';
 import Avatar from './Avatar';
 
 type Props = {
@@ -23,6 +25,18 @@ type Props = {
   onDelete: (contact: ContactItem) => void;
   onToggleFavorite: (contact: ContactItem) => void;
 };
+
+function getSocialIconName(platform: string): keyof typeof Ionicons.glyphMap {
+  const p = platform.toLowerCase();
+  if (p === 'twitter' || p === 'x') return 'logo-twitter';
+  if (p === 'linkedin') return 'logo-linkedin';
+  if (p === 'github') return 'logo-github';
+  if (p === 'instagram') return 'logo-instagram';
+  if (p === 'facebook') return 'logo-facebook';
+  if (p === 'whatsapp') return 'logo-whatsapp';
+  if (p === 'telegram') return 'paper-plane-outline';
+  return 'globe-outline';
+}
 
 export default function ContactDetailModal({
   contact,
@@ -36,15 +50,31 @@ export default function ContactDetailModal({
 
   if (!contact) return null;
 
-  const firstPhone = contact.phones[0]?.number;
-  const firstEmail = contact.emails[0]?.email;
+  const firstPhone = contact.phones?.[0]?.number;
+  const firstEmail = contact.emails?.[0]?.email;
+
+  // Split phones into Personal (Mobile, Home, Main, etc.) and Work
+  const personalPhones = (contact.phones || []).filter((p) => p.label.toLowerCase() !== 'work');
+  const workPhones = (contact.phones || []).filter((p) => p.label.toLowerCase() === 'work');
+
+  // Split emails into Personal and Work
+  const personalEmails = (contact.emails || []).filter((e) => e.label.toLowerCase() !== 'work');
+  const workEmails = (contact.emails || []).filter((e) => e.label.toLowerCase() === 'work');
+
+  // Split addresses
+  const personalAddresses = (contact.addresses || []).filter((a) => a.label.toLowerCase() !== 'work');
+  const workAddresses = (contact.addresses || []).filter((a) => a.label.toLowerCase() === 'work');
+
+  const socialProfiles = contact.socialProfiles || [];
+  const hasWorkSection = Boolean(contact.company || contact.jobTitle || workPhones.length > 0 || workEmails.length > 0 || workAddresses.length > 0);
+  const hasPersonalSection = Boolean(personalPhones.length > 0 || personalEmails.length > 0 || socialProfiles.length > 0 || personalAddresses.length > 0);
 
   const handleCall = (phoneNum: string) => {
-    void Linking.openURL(`tel:${phoneNum.replace(/\s+/g, '')}`);
+    void openPhoneDeepLink(phoneNum, 'call');
   };
 
   const handleSms = (phoneNum: string) => {
-    void Linking.openURL(`sms:${phoneNum.replace(/\s+/g, '')}`);
+    void openPhoneDeepLink(phoneNum, 'sms');
   };
 
   const handleEmail = (emailAddr: string) => {
@@ -57,13 +87,16 @@ export default function ContactDetailModal({
     void Linking.openURL(`https://maps.apple.com/?q=${query}`);
   };
 
-  const handleShareVCard = () => {
+  const handleNativeShare = async () => {
     const vcard = generateVCard(contact);
-    Alert.alert(
-      `Share Contact: ${contact.displayName}`,
-      vcard,
-      [{ text: 'OK' }]
-    );
+    try {
+      await Share.share({
+        title: contact.displayName,
+        message: `${contact.displayName}\n\n${vcard}`,
+      });
+    } catch {
+      Alert.alert('Share', vcard);
+    }
   };
 
   const confirmDelete = () => {
@@ -120,15 +153,18 @@ export default function ContactDetailModal({
         </View>
 
         <ScrollView contentContainerStyle={styles.scrollContent}>
-          {/* Profile Header */}
+          {/* Top Section: Picture, Names, Notes, Birthday */}
           <View style={styles.profileHeader}>
             <Avatar contact={contact} size={90} />
             <Text style={styles.displayName}>{contact.displayName}</Text>
 
-            {contact.jobTitle || contact.company ? (
-              <Text style={styles.jobTitle}>
-                {[contact.jobTitle, contact.company].filter(Boolean).join(' • ')}
-              </Text>
+            {/* Individual Name Breakdown */}
+            {(contact.firstName || contact.middleName || contact.surname) ? (
+              <View style={styles.nameBreakdown}>
+                {contact.firstName ? <Text style={styles.namePartLabel}>First: <Text style={styles.namePartValue}>{contact.firstName}</Text></Text> : null}
+                {contact.middleName ? <Text style={styles.namePartLabel}>Middle: <Text style={styles.namePartValue}>{contact.middleName}</Text></Text> : null}
+                {contact.surname ? <Text style={styles.namePartLabel}>Surname: <Text style={styles.namePartValue}>{contact.surname}</Text></Text> : null}
+              </View>
             ) : null}
 
             {/* Quick Action Buttons */}
@@ -166,14 +202,40 @@ export default function ContactDetailModal({
                 </Text>
               </Pressable>
 
-              <Pressable style={styles.quickBtn} onPress={handleShareVCard}>
+              <Pressable style={styles.quickBtn} onPress={handleNativeShare}>
                 <Ionicons name="share-social" size={20} color="#2563eb" />
-                <Text style={styles.quickBtnLabel}>vCard</Text>
+                <Text style={styles.quickBtnLabel}>Share</Text>
               </Pressable>
             </View>
           </View>
 
-          {/* Tags / Groups */}
+          {/* Birthday & Notes in Top Context Section */}
+          {contact.birthday || contact.notes ? (
+            <View style={styles.cardSection}>
+              <Text style={styles.sectionHeader}>About</Text>
+              {contact.birthday ? (
+                <View style={styles.itemRow}>
+                  <Ionicons name="calendar-outline" size={18} color="#2563eb" style={{ marginRight: 10 }} />
+                  <View style={styles.itemMain}>
+                    <Text style={styles.itemLabel}>Birthday</Text>
+                    <Text style={styles.itemValue}>{contact.birthday}</Text>
+                  </View>
+                </View>
+              ) : null}
+
+              {contact.notes ? (
+                <View style={[styles.itemRow, { borderBottomWidth: 0, marginTop: 4 }]}>
+                  <Ionicons name="document-text-outline" size={18} color="#2563eb" style={{ marginRight: 10, marginTop: 2 }} />
+                  <View style={styles.itemMain}>
+                    <Text style={styles.itemLabel}>Notes</Text>
+                    <Text style={styles.notesText}>{contact.notes}</Text>
+                  </View>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          {/* Tags */}
           {contact.tags && contact.tags.length > 0 ? (
             <View style={styles.tagsRow}>
               {contact.tags.map((tag) => (
@@ -185,71 +247,72 @@ export default function ContactDetailModal({
             </View>
           ) : null}
 
-          {/* Phone Numbers */}
-          {contact.phones.length > 0 ? (
+          {/* Personal Context Section */}
+          {hasPersonalSection ? (
             <View style={styles.cardSection}>
-              <Text style={styles.sectionHeader}>Phone Numbers</Text>
-              {contact.phones.map((phone: PhoneItem) => (
+              <View style={styles.sectionHeaderRow}>
+                <Ionicons name="person-outline" size={16} color="#2563eb" />
+                <Text style={styles.sectionHeader}>Personal Information</Text>
+              </View>
+
+              {/* Personal Phones */}
+              {personalPhones.map((phone: PhoneItem) => (
                 <View key={phone.id} style={styles.itemRow}>
                   <View style={styles.itemMain}>
                     <Text style={styles.itemLabel}>{phone.label}</Text>
                     <Text style={styles.itemValue}>{phone.number}</Text>
                   </View>
                   <View style={styles.itemActions}>
-                    <Pressable
-                      style={styles.iconBtn}
-                      onPress={() => handleCall(phone.number)}
-                      hitSlop={6}
-                    >
+                    <Pressable style={styles.iconBtn} onPress={() => handleCall(phone.number)} hitSlop={6}>
                       <Ionicons name="call-outline" size={20} color="#2563eb" />
                     </Pressable>
-                    <Pressable
-                      style={styles.iconBtn}
-                      onPress={() => handleSms(phone.number)}
-                      hitSlop={6}
-                    >
+                    <Pressable style={styles.iconBtn} onPress={() => handleSms(phone.number)} hitSlop={6}>
                       <Ionicons name="chatbubble-outline" size={20} color="#2563eb" />
                     </Pressable>
                   </View>
                 </View>
               ))}
-            </View>
-          ) : null}
 
-          {/* Emails */}
-          {contact.emails.length > 0 ? (
-            <View style={styles.cardSection}>
-              <Text style={styles.sectionHeader}>Email Addresses</Text>
-              {contact.emails.map((email: EmailItem) => (
+              {/* Personal Emails */}
+              {personalEmails.map((email: EmailItem) => (
                 <View key={email.id} style={styles.itemRow}>
                   <View style={styles.itemMain}>
                     <Text style={styles.itemLabel}>{email.label}</Text>
                     <Text style={styles.itemValue}>{email.email}</Text>
                   </View>
-                  <Pressable
-                    style={styles.iconBtn}
-                    onPress={() => handleEmail(email.email)}
-                    hitSlop={6}
-                  >
+                  <Pressable style={styles.iconBtn} onPress={() => handleEmail(email.email)} hitSlop={6}>
                     <Ionicons name="mail-outline" size={20} color="#2563eb" />
                   </Pressable>
                 </View>
               ))}
-            </View>
-          ) : null}
 
-          {/* Addresses */}
-          {contact.addresses.length > 0 ? (
-            <View style={styles.cardSection}>
-              <Text style={styles.sectionHeader}>Addresses</Text>
-              {contact.addresses.map((addr: AddressItem) => {
+              {/* Social Profiles with Deep Linking */}
+              {socialProfiles.map((social: SocialProfileItem) => (
+                <View key={social.id} style={styles.itemRow}>
+                  <Ionicons name={getSocialIconName(social.platform)} size={20} color="#2563eb" style={{ marginRight: 10 }} />
+                  <View style={styles.itemMain}>
+                    <Text style={styles.itemLabel}>{social.platform}</Text>
+                    <Text style={styles.itemValue}>{social.username}</Text>
+                  </View>
+                  <Pressable
+                    style={styles.deepLinkBtn}
+                    onPress={() => void openSocialDeepLink(social.platform, social.username, social.url)}
+                  >
+                    <Text style={styles.deepLinkBtnText}>Open</Text>
+                    <Ionicons name="open-outline" size={14} color="#2563eb" />
+                  </Pressable>
+                </View>
+              ))}
+
+              {/* Personal Addresses */}
+              {personalAddresses.map((addr: AddressItem) => {
                 const fullStr = [addr.street, addr.city, addr.state, addr.zip, addr.country]
                   .filter(Boolean)
                   .join(', ');
                 return (
                   <View key={addr.id} style={styles.itemRow}>
                     <View style={styles.itemMain}>
-                      <Text style={styles.itemLabel}>{addr.label}</Text>
+                      <Text style={styles.itemLabel}>{addr.label} Address</Text>
                       <Text style={styles.itemValue}>{fullStr}</Text>
                     </View>
                     <Pressable style={styles.iconBtn} onPress={() => handleMap(addr)} hitSlop={6}>
@@ -261,22 +324,75 @@ export default function ContactDetailModal({
             </View>
           ) : null}
 
-          {/* Birthday */}
-          {contact.birthday ? (
+          {/* Work Context Section */}
+          {hasWorkSection ? (
             <View style={styles.cardSection}>
-              <Text style={styles.sectionHeader}>Birthday</Text>
-              <View style={styles.itemRow}>
-                <Ionicons name="calendar-outline" size={20} color="#64748b" style={{ marginRight: 10 }} />
-                <Text style={styles.itemValue}>{contact.birthday}</Text>
+              <View style={styles.sectionHeaderRow}>
+                <Ionicons name="briefcase-outline" size={16} color="#2563eb" />
+                <Text style={styles.sectionHeader}>Work Information</Text>
               </View>
-            </View>
-          ) : null}
 
-          {/* Notes */}
-          {contact.notes ? (
-            <View style={styles.cardSection}>
-              <Text style={styles.sectionHeader}>Notes</Text>
-              <Text style={styles.notesText}>{contact.notes}</Text>
+              {contact.company || contact.jobTitle ? (
+                <View style={styles.itemRow}>
+                  <View style={styles.itemMain}>
+                    {contact.company ? (
+                      <Text style={styles.itemValueBold}>{contact.company}</Text>
+                    ) : null}
+                    {contact.jobTitle ? (
+                      <Text style={styles.itemLabel}>{contact.jobTitle}</Text>
+                    ) : null}
+                  </View>
+                </View>
+              ) : null}
+
+              {/* Work Phones */}
+              {workPhones.map((phone: PhoneItem) => (
+                <View key={phone.id} style={styles.itemRow}>
+                  <View style={styles.itemMain}>
+                    <Text style={styles.itemLabel}>Work Phone</Text>
+                    <Text style={styles.itemValue}>{phone.number}</Text>
+                  </View>
+                  <View style={styles.itemActions}>
+                    <Pressable style={styles.iconBtn} onPress={() => handleCall(phone.number)} hitSlop={6}>
+                      <Ionicons name="call-outline" size={20} color="#2563eb" />
+                    </Pressable>
+                    <Pressable style={styles.iconBtn} onPress={() => handleSms(phone.number)} hitSlop={6}>
+                      <Ionicons name="chatbubble-outline" size={20} color="#2563eb" />
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+
+              {/* Work Emails */}
+              {workEmails.map((email: EmailItem) => (
+                <View key={email.id} style={styles.itemRow}>
+                  <View style={styles.itemMain}>
+                    <Text style={styles.itemLabel}>Work Email</Text>
+                    <Text style={styles.itemValue}>{email.email}</Text>
+                  </View>
+                  <Pressable style={styles.iconBtn} onPress={() => handleEmail(email.email)} hitSlop={6}>
+                    <Ionicons name="mail-outline" size={20} color="#2563eb" />
+                  </Pressable>
+                </View>
+              ))}
+
+              {/* Work Addresses */}
+              {workAddresses.map((addr: AddressItem) => {
+                const fullStr = [addr.street, addr.city, addr.state, addr.zip, addr.country]
+                  .filter(Boolean)
+                  .join(', ');
+                return (
+                  <View key={addr.id} style={styles.itemRow}>
+                    <View style={styles.itemMain}>
+                      <Text style={styles.itemLabel}>Work Address</Text>
+                      <Text style={styles.itemValue}>{fullStr}</Text>
+                    </View>
+                    <Pressable style={styles.iconBtn} onPress={() => handleMap(addr)} hitSlop={6}>
+                      <Ionicons name="navigate-outline" size={20} color="#2563eb" />
+                    </Pressable>
+                  </View>
+                );
+              })}
             </View>
           ) : null}
 
@@ -334,11 +450,20 @@ const styles = StyleSheet.create({
     marginTop: 12,
     textAlign: 'center',
   },
-  jobTitle: {
-    fontSize: 14,
+  nameBreakdown: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 6,
+  },
+  namePartLabel: {
+    fontSize: 12,
     color: '#64748b',
-    marginTop: 4,
-    textAlign: 'center',
+  },
+  namePartValue: {
+    color: '#0f172a',
+    fontWeight: '600',
   },
   quickActions: {
     flexDirection: 'row',
@@ -396,19 +521,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e2e8f0',
   },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 10,
+  },
   sectionHeader: {
     fontSize: 13,
     fontWeight: '700',
     color: '#64748b',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-    marginBottom: 10,
   },
   itemRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 6,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
   },
@@ -426,6 +556,11 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     marginTop: 2,
   },
+  itemValueBold: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
   itemActions: {
     flexDirection: 'row',
     gap: 12,
@@ -433,10 +568,25 @@ const styles = StyleSheet.create({
   iconBtn: {
     padding: 6,
   },
+  deepLinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  deepLinkBtnText: {
+    fontSize: 12,
+    color: '#2563eb',
+    fontWeight: '600',
+  },
   notesText: {
     fontSize: 14,
     color: '#334155',
     lineHeight: 20,
+    marginTop: 2,
   },
   deleteBtn: {
     flexDirection: 'row',
@@ -456,3 +606,4 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
 });
+

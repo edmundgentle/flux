@@ -5,6 +5,7 @@ export type AppConfig = {
   port: number;
   host: string;
   databaseUrl: string;
+  redisUrl: string;
   wsPath: string;
   corsOrigins: string[];
 };
@@ -31,6 +32,11 @@ export function loadConfig(): AppConfig {
     throw new Error('DATABASE_URL environment variable is required to store instances and users');
   }
 
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) {
+    throw new Error('REDIS_URL environment variable is required for multi-instance relay coordination');
+  }
+
   const port = Number(process.env.PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`PORT must be an integer between 1 and 65535 (got: ${process.env.PORT ?? '3000'})`);
@@ -45,6 +51,7 @@ export function loadConfig(): AppConfig {
     port,
     host,
     databaseUrl,
+    redisUrl,
     wsPath: (process.env.WS_PATH || '/ws').trim() || '/ws',
     corsOrigins: (process.env.CORS_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean),
   };

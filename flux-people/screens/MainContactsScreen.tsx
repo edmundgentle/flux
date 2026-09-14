@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Modal,
   Pressable,
   SectionList,
@@ -19,9 +20,17 @@ import {
   parseContactJson,
   serializeContactJson,
 } from '../utils/contactUtils';
+import {
+  deleteCachedContact,
+  getCachedContacts,
+  saveCachedContacts,
+  searchCachedContacts,
+  upsertCachedContact,
+} from '../utils/contactCache';
 import ContactCard from '../components/ContactCard';
 import ContactDetailModal from '../components/ContactDetailModal';
 import ContactEditorModal from '../components/ContactEditorModal';
+import ImportSharedContactModal from '../components/ImportSharedContactModal';
 
 type Props = {
   client: FluxClient;
@@ -48,8 +57,14 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
   const insets = useSafeAreaInsets();
   const [connectionState, setConnectionState] = useState(client.getState());
   const [query, setQuery] = useState('');
+
+  // Cached contacts stored locally
+  const [cachedContacts, setCachedContacts] = useState<ContactItem[]>([]);
+  // Displayed contacts
   const [contacts, setContacts] = useState<ContactItem[]>([]);
+
   const [loading, setLoading] = useState(false);
+  const [isOffline, setIsOffline] = useState(false);
   const [status, setStatus] = useState('Syncing contacts...');
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -63,6 +78,10 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
   const [editorModalOpen, setEditorModalOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<ContactItem | null>(null);
 
+  // Import shared contact state
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [sharedImportText, setSharedImportText] = useState('');
+
   useEffect(() => {
     const unsubscribe = client.onStateChange(setConnectionState);
     return () => unsubscribe();
@@ -70,56 +89,122 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
 
   const authSession = client.getAuthSession();
 
+  // Load local cache on mount
+  useEffect(() => {
+    void getCachedContacts().then((local) => {
+      setCachedContacts(local);
+      if (local.length > 0) {
+        setContacts(local);
+      }
+    });
+  }, []);
+
+  // Listen for incoming deep links from external app sharing
+  useEffect(() => {
+    const handleUrl = (url: string | null) => {
+      if (!url) return;
+      try {
+        if (url.includes('import') || url.includes('vcard') || url.includes('share')) {
+          const parsedUrl = new URL(url);
+          const data = parsedUrl.searchParams.get('data') || parsedUrl.searchParams.get('vcard') || parsedUrl.searchParams.get('content');
+          if (data) {
+            setSharedImportText(decodeURIComponent(data));
+            setImportModalOpen(true);
+          }
+        }
+      } catch {
+        // Fallback for custom schemes
+        if (url.includes('vcard=') || url.includes('data=')) {
+          const matched = url.match(/(?:vcard|data)=([^&]+)/);
+          if (matched && matched[1]) {
+            setSharedImportText(decodeURIComponent(matched[1]));
+            setImportModalOpen(true);
+          }
+        }
+      }
+    };
+
+    void Linking.getInitialURL().then(handleUrl);
+    const subscription = Linking.addEventListener('url', (evt) => handleUrl(evt.url));
+    return () => subscription.remove();
+  }, []);
+
   const loadContacts = useCallback(async (searchQuery: string) => {
     setLoading(true);
     setError(null);
 
+    // 1. Immediately search local cache for zero-latency response
+    const localResults = searchCachedContacts(cachedContacts, searchQuery, selectedTag);
+    setContacts(localResults);
+
+    // 2. Full search from server when available
     try {
       await client.connect();
+      setIsOffline(false);
 
-      // Query Tantivy via Flux SDK search API
       const searchResults: SearchResult[] = await client.search({
         q: searchQuery.trim(),
         limit: 300,
       });
 
-      // Filter results for /Contacts/ directory or .json files under Contacts
       const contactFiles = searchResults.filter(
         (res) => res.path.includes('/Contacts/') || res.path.endsWith('.json')
       );
 
-      // Fetch file content for each contact
-      const loaded: ContactItem[] = await Promise.all(
+      const loadedResults = await Promise.all(
         contactFiles.map(async (fileRes) => {
           try {
             const blob = await client.downloadFile(fileRes.path);
             const text = await blob.text();
             return parseContactJson(text, fileRes.path, fileRes.date_created);
           } catch {
-            // Fallback parsing if download fails
-            return parseContactJson(
-              fileRes.content_preview || '{}',
-              fileRes.path,
-              fileRes.date_created
-            );
+            // Search previews are capped and can be incomplete JSON. Parsing one
+            // would manufacture an "Unnamed Contact" and replace valid cached data.
+            return null;
           }
         })
       );
+      const loaded = loadedResults.filter((contact): contact is ContactItem => contact !== null);
 
-      setContacts(loaded);
+      // Only replace the cache after every contact file was downloaded. A partial
+      // result must not erase a contact that was just saved locally.
+      if (!searchQuery.trim()) {
+        const completeServerResult = loaded.length === contactFiles.length;
+        if (completeServerResult) {
+          await saveCachedContacts(loaded);
+          setCachedContacts(loaded);
+          setContacts(loaded);
+        } else {
+          const merged = [
+            ...loaded,
+            ...cachedContacts.filter(
+              (cached) => !loaded.some((server) => server.id === cached.id || server.path === cached.path)
+            ),
+          ];
+          setContacts(merged);
+        }
+      } else {
+        setContacts(loaded);
+      }
+
       setStatus(
         searchQuery.trim()
           ? `${loaded.length} results matching "${searchQuery.trim()}"`
           : `${loaded.length} contacts`
       );
     } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : 'Failed to load contacts';
-      setError(message);
-      setStatus(message);
+      // Offline / network failure: fallback gracefully to local cache
+      setIsOffline(true);
+      const fallbackLocal = searchCachedContacts(cachedContacts, searchQuery, selectedTag);
+      setContacts(fallbackLocal);
+      const msg = searchQuery.trim()
+        ? `Offline mode: ${fallbackLocal.length} cached contacts matching "${searchQuery.trim()}"`
+        : `Offline mode: ${fallbackLocal.length} contacts cached`;
+      setStatus(msg);
     } finally {
       setLoading(false);
     }
-  }, [client]);
+  }, [client, cachedContacts, selectedTag]);
 
   // Debounced search on typing
   useEffect(() => {
@@ -132,11 +217,11 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
   // Available tags extracted from all loaded contacts
   const availableTags = useMemo(() => {
     const set = new Set<string>();
-    for (const c of contacts) {
+    for (const c of cachedContacts.length > 0 ? cachedContacts : contacts) {
       if (c.tags) c.tags.forEach((t) => set.add(t));
     }
     return Array.from(set);
-  }, [contacts]);
+  }, [contacts, cachedContacts]);
 
   // Filter contacts by selected tag filter
   const filteredContacts = useMemo(() => {
@@ -178,15 +263,22 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
     const filename = `${cleanId}.json`;
     const filePath = contactData.path || `Contacts/${filename}`;
 
+    const surnameVal = (contactData.surname || contactData.lastName || '').trim();
+
     const fullContactItem: ContactItem = {
       id: cleanId,
-      firstName: contactData.firstName || '',
-      lastName: contactData.lastName || '',
-      displayName: contactData.firstName || contactData.lastName ? `${contactData.firstName || ''} ${contactData.lastName || ''}`.trim() : (contactData.company || 'Unnamed Contact'),
+      firstName: (contactData.firstName || '').trim(),
+      middleName: (contactData.middleName || '').trim(),
+      surname: surnameVal,
+      lastName: surnameVal,
+      displayName: (contactData.firstName || surnameVal || contactData.company)
+        ? `${contactData.firstName || ''} ${contactData.middleName || ''} ${surnameVal}`.replace(/\s+/g, ' ').trim()
+        : (contactData.company || 'Unnamed Contact'),
       company: contactData.company || '',
       jobTitle: contactData.jobTitle || '',
       phones: contactData.phones || [],
       emails: contactData.emails || [],
+      socialProfiles: contactData.socialProfiles || [],
       addresses: contactData.addresses || [],
       notes: contactData.notes || '',
       birthday: contactData.birthday || '',
@@ -198,26 +290,37 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
       path: filePath,
     };
 
-    const jsonString = serializeContactJson(fullContactItem);
-    const encoder = new TextEncoder();
-    const bytes = encoder.encode(jsonString);
+    // 1. Immediately update local cache for instant offline responsiveness
+    const updatedCache = await upsertCachedContact(fullContactItem);
+    setCachedContacts(updatedCache);
+    setContacts(searchCachedContacts(updatedCache, query, selectedTag));
 
-    // Upload file to /{user}/Contacts/ in Flux server
-    await client.uploadFile(bytes, {
-      directory: '/Contacts',
-      path: filename,
-    });
+    // 2. Sync with Flux server if online
+    try {
+      const jsonString = serializeContactJson(fullContactItem);
+      const encoder = new TextEncoder();
+      const bytes = encoder.encode(jsonString);
 
-    await loadContacts(query);
+      await client.uploadFile(bytes, {
+        directory: '/Contacts',
+        path: filename,
+      });
+    } catch (err) {
+      console.warn('Saved to local cache; server upload failed (offline mode):', err);
+    }
   };
 
   const handleDeleteContact = async (contact: ContactItem) => {
+    // 1. Immediately remove from local cache
+    const updatedCache = await deleteCachedContact(contact.id);
+    setCachedContacts(updatedCache);
+    setContacts(searchCachedContacts(updatedCache, query, selectedTag));
+
+    // 2. Delete on server if online
     try {
       await client.deleteFile(contact.path);
-      await loadContacts(query);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Delete failed';
-      Alert.alert('Delete failed', msg);
+      console.warn('Deleted from local cache; server delete failed (offline mode):', err);
     }
   };
 
@@ -229,20 +332,27 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
     };
 
     // Optimistic UI update
-    setContacts((prev) => prev.map((c) => (c.id === contact.id ? updated : c)));
+    const updatedCache = await upsertCachedContact(updated);
+    setCachedContacts(updatedCache);
+    setContacts(searchCachedContacts(updatedCache, query, selectedTag));
+
     if (selectedContact?.id === contact.id) {
       setSelectedContact(updated);
     }
 
-    const jsonString = serializeContactJson(updated);
-    const encoder = new TextEncoder();
-    const bytes = encoder.encode(jsonString);
+    try {
+      const jsonString = serializeContactJson(updated);
+      const encoder = new TextEncoder();
+      const bytes = encoder.encode(jsonString);
 
-    const filename = contact.path.split('/').pop() || `${contact.id}.json`;
-    await client.uploadFile(bytes, {
-      directory: '/Contacts',
-      path: filename,
-    });
+      const filename = contact.path.split('/').pop() || `${contact.id}.json`;
+      await client.uploadFile(bytes, {
+        directory: '/Contacts',
+        path: filename,
+      });
+    } catch (err) {
+      console.warn('Favorited locally; server update failed (offline mode):', err);
+    }
   };
 
   const signOut = async () => {
@@ -284,10 +394,21 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
         </View>
 
         <View style={styles.appBarRight}>
+          <Pressable
+            style={styles.iconAppBarBtn}
+            onPress={() => {
+              setSharedImportText('');
+              setImportModalOpen(true);
+            }}
+            hitSlop={8}
+          >
+            <Ionicons name="download-outline" size={22} color="#2563eb" />
+          </Pressable>
+
           <View style={styles.connectionBadge}>
-            <Ionicons name={connectionIcon.name} size={15} color={connectionIcon.color} />
+            <Ionicons name={isOffline ? 'cloud-offline-outline' : connectionIcon.name} size={15} color={isOffline ? '#dc2626' : connectionIcon.color} />
             <Text style={styles.connectionLabel} numberOfLines={1}>
-              {transport === 'local' ? 'Local Wi-Fi' : 'Cloud Relay'}
+              {isOffline ? 'Offline' : transport === 'local' ? 'Local Wi-Fi' : 'Cloud Relay'}
             </Text>
           </View>
 
@@ -304,7 +425,9 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
             <Text style={styles.menuName}>{authSession?.user ?? 'Flux User'}</Text>
             <Text style={styles.menuMeta}>{instanceLabel}</Text>
             <Text style={styles.menuMeta}>
-              {connectionState === 'connected'
+              {isOffline
+                ? 'Offline Mode (Local Cache Active)'
+                : connectionState === 'connected'
                 ? transport === 'local'
                   ? 'Connected via Local Wi-Fi'
                   : 'Connected via Cloud Relay'
@@ -347,13 +470,22 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Search contacts..."
+            placeholder="Search contacts offline or online..."
             style={styles.searchInput}
             autoCapitalize="none"
             clearButtonMode="while-editing"
           />
           {loading ? <ActivityIndicator size="small" color="#2563eb" style={{ marginLeft: 6 }} /> : null}
         </View>
+
+        {isOffline ? (
+          <View style={styles.offlineBanner}>
+            <Ionicons name="cloud-offline" size={14} color="#b45309" />
+            <Text style={styles.offlineBannerText}>
+              Offline mode — Searching local cache ({cachedContacts.length} contacts saved)
+            </Text>
+          </View>
+        ) : null}
 
         {/* Filter Pills */}
         <View style={styles.pillsRow}>
@@ -449,6 +581,14 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
         onClose={() => setEditorModalOpen(false)}
         onSave={handleSaveContact}
       />
+
+      {/* Import Shared Contact Modal */}
+      <ImportSharedContactModal
+        visible={importModalOpen}
+        initialSharedContent={sharedImportText}
+        onClose={() => setImportModalOpen(false)}
+        onImport={handleSaveContact}
+      />
     </View>
   );
 }
@@ -489,7 +629,12 @@ const styles = StyleSheet.create({
   appBarRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
+  },
+  iconAppBarBtn: {
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: '#eff6ff',
   },
   connectionBadge: {
     flexDirection: 'row',
@@ -589,6 +734,21 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#0f172a',
     padding: 0,
+  },
+  offlineBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#fef3c7',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    marginTop: 6,
+  },
+  offlineBannerText: {
+    fontSize: 11,
+    color: '#92400e',
+    fontWeight: '600',
   },
   pillsRow: {
     flexDirection: 'row',

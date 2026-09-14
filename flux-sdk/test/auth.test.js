@@ -145,6 +145,27 @@ test('download decodes the relay file envelope into a Blob', async () => {
   assert.equal(await file.text(), 'hello');
 });
 
+test('download preserves a raw JSON file served by the local instance', async () => {
+  const contact = {
+    id: 'contact_123',
+    firstName: 'Ada',
+    lastName: 'Lovelace',
+    emails: [{ label: 'Work', email: 'ada@example.com' }],
+  };
+  const client = new FluxClient({
+    relayUrl: 'https://relay.test',
+    instanceId: 'instance-a',
+    accessToken: 'access-token',
+    autoConnect: false,
+    fetchImpl: async () => createJsonResponse(contact),
+  });
+
+  const file = await client.downloadFile('/data/Contacts/contact_123.json');
+
+  assert.equal(file.type, 'application/json');
+  assert.deepEqual(JSON.parse(await file.text()), contact);
+});
+
 test('connect rejects an unconfigured relay URL and instance', async () => {
   const client = new FluxClient({
     relayUrl: '',

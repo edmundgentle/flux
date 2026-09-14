@@ -500,13 +500,26 @@ export class FluxClient {
         const parseDownload = async (response) => {
             if (!response.ok)
                 throw new Error(`Download failed: ${response.status}`);
-            if (!response.headers.get('content-type')?.includes('application/json'))
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json'))
                 return await response.blob();
-            const payload = await response.json();
-            if (!payload.content_b64)
-                throw new Error('Download response did not include file content');
-            const bytes = decodeBase64(payload.content_b64);
-            return bytesToBlob(bytes, payload.mime_type || 'application/octet-stream');
+            // The relay wraps downloads in JSON containing base64 data, while the
+            // local server serves JSON files (including contacts) as their raw body.
+            // Read the body once and only unwrap it when it is actually a relay payload.
+            const rawText = await response.text();
+            let payload;
+            try {
+                payload = JSON.parse(rawText);
+            }
+            catch {
+                // Preserve an unexpected JSON response as a file; callers can surface
+                // a useful parse error rather than silently falling back to a preview.
+            }
+            if (payload?.content_b64) {
+                const bytes = decodeBase64(payload.content_b64);
+                return bytesToBlob(bytes, payload.mime_type || 'application/octet-stream');
+            }
+            return new Blob([rawText], { type: contentType });
         };
         return await this.withLocalFallback('download', async (baseUrl, token) => {
             const url = new URL('/api/files/download', baseUrl);

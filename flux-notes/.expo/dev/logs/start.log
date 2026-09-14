@@ -29,3 +29,100 @@
 {"_e":"metro:bundling:progress","_t":1789125436945,"id":"4","progress":0.997485858945453,"total":795,"current":794}
 {"_e":"metro:bundling:progress","_t":1789125437046,"id":"4","progress":0.999,"total":809,"current":809}
 {"_e":"metro:bundling:done","_t":1789125437131,"id":"4","total":809,"ms":2491.664709}
+{"_e":"root:init","_t":1789151985708,"format":"v0-jsonl","version":"57.0.23"}
+{"_e":"env:mode","_t":1789151985708,"nodeEnv":"development","babelEnv":"development","mode":"development"}
+{"_e":"env:load","_t":1789151985709,"mode":"development","files":[],"env":{}}
+{"_e":"devserver:start","_t":1789151985846,"mode":"development","web":true,"baseUrl":"","asyncRoutes":false,"routerRoot":"../../../app","serverComponents":false,"serverActions":false,"serverRendering":false,"apiRoutes":false,"exporting":false}
+{"_e":"metro:config","_t":1789151986312,"serverRoot":"../../../..","projectRoot":"../../..","exporting":false,"flags":{"autolinkingModuleResolution":true,"serverActions":false,"serverComponents":false,"reactCompiler":false,"optimizeGraph":false,"treeshaking":false,"logbox":false}}
+{"_e":"expo:dev-tools-plugin:load","_t":1789151986379,"plugins":[]}
+{"_e":"metro:instantiate","_t":1789151986698,"atlas":false,"workers":8,"host":"::","port":8081}
+{"_e":"metro:bundling:started","_t":1789151997862,"id":"1","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789151997862,"id":"1","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789151997864,"id":"1","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789151997964,"id":"1","progress":0.34050657439446363,"total":425,"current":248}
+{"_e":"metro:bundling:progress","_t":1789151998064,"id":"1","progress":0.816984283450475,"total":749,"current":677}
+{"_e":"metro:bundling:done","_t":1789151998128,"id":"1","total":749,"ms":266.242666}
+{"_e":"root:init","_t":1789239891917,"format":"v0-jsonl","version":"57.0.23"}
+{"_e":"env:mode","_t":1789239891918,"nodeEnv":"development","babelEnv":"development","mode":"development"}
+{"_e":"env:load","_t":1789239891918,"mode":"development","files":[],"env":{}}
+{"_e":"devserver:start","_t":1789239892079,"mode":"development","web":true,"baseUrl":"","asyncRoutes":false,"routerRoot":"../../../app","serverComponents":false,"serverActions":false,"serverRendering":false,"apiRoutes":false,"exporting":false}
+{"_e":"metro:config","_t":1789239892534,"serverRoot":"../../../..","projectRoot":"../../..","exporting":false,"flags":{"autolinkingModuleResolution":true,"serverActions":false,"serverComponents":false,"reactCompiler":false,"optimizeGraph":false,"treeshaking":false,"logbox":false}}
+{"_e":"expo:dev-tools-plugin:load","_t":1789239892626,"plugins":[]}
+{"_e":"metro:instantiate","_t":1789239892987,"atlas":false,"workers":8,"host":"::","port":8081}
+{"_e":"metro:bundling:started","_t":1789239903229,"id":"3","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789239903229,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789239903243,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789239903343,"id":"3","progress":0.34222499999999995,"total":400,"current":234}
+{"_e":"metro:bundling:progress","_t":1789239903443,"id":"3","progress":0.8692965545384828,"total":754,"current":703}
+{"_e":"metro:bundling:done","_t":1789239903499,"id":"3","total":754,"ms":270.13425}
+{"_e":"root:init","_t":1789241368945,"format":"v0-jsonl","version":"57.0.23"}
+{"_e":"env:mode","_t":1789241368945,"nodeEnv":"development","babelEnv":"development","mode":"development"}
+{"_e":"env:load","_t":1789241368946,"mode":"development","files":[],"env":{}}
+{"_e":"devserver:start","_t":1789241369083,"mode":"development","web":true,"baseUrl":"","asyncRoutes":false,"routerRoot":"../../../app","serverComponents":false,"serverActions":false,"serverRendering":false,"apiRoutes":false,"exporting":false}
+{"_e":"metro:config","_t":1789241369528,"serverRoot":"../../../..","projectRoot":"../../..","exporting":false,"flags":{"autolinkingModuleResolution":true,"serverActions":false,"serverComponents":false,"reactCompiler":false,"optimizeGraph":false,"treeshaking":false,"logbox":false}}
+{"_e":"expo:dev-tools-plugin:load","_t":1789241369601,"plugins":[]}
+{"_e":"metro:instantiate","_t":1789241369918,"atlas":false,"workers":8,"host":"::","port":8081}
+{"_e":"metro:bundling:started","_t":1789241378835,"id":"1","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789241378835,"id":"1","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241378837,"id":"1","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241378937,"id":"1","progress":0.34519147272110373,"total":417,"current":245}
+{"_e":"metro:bundling:progress","_t":1789241379037,"id":"1","progress":0.8297956039272895,"total":741,"current":675}
+{"_e":"metro:bundling:progress","_t":1789241379138,"id":"1","progress":0.9975293400419568,"total":809,"current":808}
+{"_e":"metro:bundling:progress","_t":1789241379347,"id":"1","progress":0.999,"total":809,"current":809}
+{"_e":"metro:bundling:done","_t":1789241379380,"id":"1","total":809,"ms":545.328542}
+{"_e":"metro:bundling:started","_t":1789241617633,"id":"2","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789241617633,"id":"2","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:done","_t":1789241617683,"id":"2","total":1,"ms":49.664875}
+{"_e":"metro:bundling:started","_t":1789241956145,"id":"3","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789241956145,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241956148,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241956248,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241956348,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241956448,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241956549,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241956676,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241956777,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789241956937,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:done","_t":1789241956963,"id":"3","total":1,"ms":817.70425}
+{"_e":"metro:client_log","_t":1789241979099,"level":"warn","data":["Response.blob() is using React Native's Blob, which copies the response into the native blob store and reads it back through base64 encoding. This may be slow for large responses. Add the `expo-blob` package to your app to avoid the performance overhead."]}
+{"_e":"metro:client_log","_t":1789241979111,"level":"warn","data":["Some attachments will remain local until the next save:","[TypeError: undefined is not a function]"]}
+{"_e":"metro:client_log","_t":1789242002621,"level":"warn","data":["Some attachments will remain local until the next save:","[TypeError: undefined is not a function]"]}
+{"_e":"metro:bundling:started","_t":1789242100723,"id":"9","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789242100724,"id":"9","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:done","_t":1789242100768,"id":"9","total":1,"ms":44.898625}
+{"_e":"metro:server_log","_t":1789242191205,"level":"error","data":["[timeout] connection terminated with Device for app='%s' on device='%s' after not responding for %s seconds.","host.exp.exponent","Pixel 9 - 17 - API 37","60"]}
+{"_e":"metro:server_log","_t":1789242191206,"level":"error","data":["[timeout] connection terminated with Device for app='%s' on device='%s' after not responding for %s seconds.","host.exp.exponent","Pixel 9 - 17 - API 37","60"]}
+{"_e":"metro:bundling:started","_t":1789242263902,"id":"a","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789242263902,"id":"a","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789242263905,"id":"a","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:done","_t":1789242264017,"id":"a","total":1,"ms":115.181833}
+{"_e":"metro:client_log","_t":1789242303648,"level":"warn","data":["Response.blob() is using React Native's Blob, which copies the response into the native blob store and reads it back through base64 encoding. This may be slow for large responses. Add the `expo-blob` package to your app to avoid the performance overhead."]}
+{"_e":"metro:client_log","_t":1789242303657,"level":"warn","data":["Some attachments will remain local until the next save:","[TypeError: undefined is not a function]"]}
+{"_e":"metro:bundling:started","_t":1789242698909,"id":"c","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789242698909,"id":"c","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789242698915,"id":"c","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:done","_t":1789242699045,"id":"c","total":1,"ms":136.249417}
+{"_e":"metro:bundling:started","_t":1789242703578,"id":"d","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789242703578,"id":"d","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:done","_t":1789242703625,"id":"d","total":1,"ms":46.944083}
+{"_e":"metro:server_log","_t":1789243833622,"level":"error","data":["[timeout] connection terminated with Device for app='%s' on device='%s' after not responding for %s seconds.","host.exp.exponent","Pixel 9 - 17 - API 37","60"]}
+{"_e":"metro:server_log","_t":1789243833622,"level":"error","data":["[timeout] connection terminated with Device for app='%s' on device='%s' after not responding for %s seconds.","host.exp.exponent","Pixel 9 - 17 - API 37","60"]}
+{"_e":"root:init","_t":1789413262811,"format":"v0-jsonl","version":"57.0.23"}
+{"_e":"env:mode","_t":1789413262812,"nodeEnv":"development","babelEnv":"development","mode":"development"}
+{"_e":"env:load","_t":1789413262813,"mode":"development","files":[],"env":{}}
+{"_e":"devserver:start","_t":1789413263000,"mode":"development","web":true,"baseUrl":"","asyncRoutes":false,"routerRoot":"../../../app","serverComponents":false,"serverActions":false,"serverRendering":false,"apiRoutes":false,"exporting":false}
+{"_e":"metro:config","_t":1789413263466,"serverRoot":"../../../..","projectRoot":"../../..","exporting":false,"flags":{"autolinkingModuleResolution":true,"serverActions":false,"serverComponents":false,"reactCompiler":false,"optimizeGraph":false,"treeshaking":false,"logbox":false}}
+{"_e":"expo:dev-tools-plugin:load","_t":1789413263533,"plugins":[]}
+{"_e":"metro:instantiate","_t":1789413263910,"atlas":false,"workers":8,"host":"::","port":8081}
+{"_e":"metro:bundling:started","_t":1789413266779,"id":"3","platform":"android","environment":null,"entry":"flux-notes/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789413266779,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789413266782,"id":"3","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789413266882,"id":"3","progress":0.4215092960447311,"total":459,"current":298}
+{"_e":"metro:bundling:progress","_t":1789413266982,"id":"3","progress":0.9971691450858285,"total":706,"current":705}
+{"_e":"metro:bundling:progress","_t":1789413267082,"id":"3","progress":0.9971691450858285,"total":804,"current":802}
+{"_e":"metro:bundling:progress","_t":1789413267220,"id":"3","progress":0.9971691450858285,"total":821,"current":817}
+{"_e":"metro:bundling:progress","_t":1789413267324,"id":"3","progress":0.9971691450858285,"total":832,"current":826}
+{"_e":"metro:bundling:progress","_t":1789413267424,"id":"3","progress":0.9971691450858285,"total":832,"current":827}
+{"_e":"metro:bundling:progress","_t":1789413267524,"id":"3","progress":0.9976345366058612,"total":845,"current":844}
+{"_e":"metro:bundling:done","_t":1789413267581,"id":"3","total":845,"ms":802.460458}
+{"_e":"metro:client_log","_t":1789413334554,"level":"warn","data":["Response.blob() is using React Native's Blob, which copies the response into the native blob store and reads it back through base64 encoding. This may be slow for large responses. Add the `expo-blob` package to your app to avoid the performance overhead."]}
