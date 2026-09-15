@@ -126,3 +126,17 @@
 {"_e":"metro:bundling:progress","_t":1789241161342,"id":"l","progress":0,"total":1,"current":0}
 {"_e":"metro:bundling:done","_t":1789241161388,"id":"l","total":1,"ms":46.627458}
 {"_e":"metro:server_log","_t":1789241169011,"level":"error","data":["[timeout] connection terminated with Device for app='%s' on device='%s' after not responding for %s seconds.","host.exp.exponent","Pixel 9 - 17 - API 37","60"]}
+{"_e":"root:init","_t":1789415600630,"format":"v0-jsonl","version":"57.0.23"}
+{"_e":"env:mode","_t":1789415600631,"nodeEnv":"development","babelEnv":"development","mode":"development"}
+{"_e":"env:load","_t":1789415600632,"mode":"development","files":[],"env":{}}
+{"_e":"devserver:start","_t":1789415600807,"mode":"development","web":true,"baseUrl":"","asyncRoutes":false,"routerRoot":"../../../app","serverComponents":false,"serverActions":false,"serverRendering":false,"apiRoutes":false,"exporting":false}
+{"_e":"metro:config","_t":1789415601282,"serverRoot":"../../../..","projectRoot":"../../..","exporting":false,"flags":{"autolinkingModuleResolution":true,"serverActions":false,"serverComponents":false,"reactCompiler":false,"optimizeGraph":false,"treeshaking":false,"logbox":false}}
+{"_e":"expo:dev-tools-plugin:load","_t":1789415601346,"plugins":[]}
+{"_e":"metro:instantiate","_t":1789415601779,"atlas":false,"workers":8,"host":"::","port":8081}
+{"_e":"metro:bundling:started","_t":1789415610713,"id":"1","platform":"android","environment":null,"entry":"flux-people/index.ts"}
+{"_e":"metro:bundling:progress","_t":1789415610713,"id":"1","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789415610717,"id":"1","progress":0,"total":1,"current":0}
+{"_e":"metro:bundling:progress","_t":1789415610817,"id":"1","progress":0.350017817494038,"total":382,"current":226}
+{"_e":"metro:bundling:progress","_t":1789415610917,"id":"1","progress":0.8310994983951872,"total":747,"current":681}
+{"_e":"metro:bundling:done","_t":1789415610978,"id":"1","total":747,"ms":264.514083}
+{"_e":"metro:client_log","_t":1789415670839,"level":"warn","data":["Saved to local cache; server upload failed (offline mode):","[Error: Cloud relay request timed out]"]}

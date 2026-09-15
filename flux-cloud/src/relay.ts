@@ -105,8 +105,21 @@ export class SharedRelay {
     private readonly registry: TunnelRegistry,
     private readonly signUser: (tunnelToken: string, instanceId: string, requestId: string, user: string) => string,
   ) {
-    this.publisher = createClient({ url: redisUrl });
+    const clientOptions = {
+      url: redisUrl,
+      pingInterval: 30_000,
+      socket: {
+        reconnectStrategy: (retries: number) => Math.min(1_000 * Math.max(retries, 1), 30_000),
+      },
+    };
+    this.publisher = createClient(clientOptions);
     this.subscriber = this.publisher.duplicate();
+    this.publisher.on('error', (error) => {
+      console.error('Valkey publisher connection error:', error);
+    });
+    this.subscriber.on('error', (error) => {
+      console.error('Valkey subscriber connection error:', error);
+    });
   }
 
   async start(): Promise<void> {
@@ -122,8 +135,8 @@ export class SharedRelay {
       pending.reject(new Error('Relay is shutting down'));
     }
     this.pending.clear();
-    await this.subscriber.quit();
-    await this.publisher.quit();
+    if (this.subscriber.isOpen) await this.subscriber.quit();
+    if (this.publisher.isOpen) await this.publisher.quit();
   }
 
   async createWsTicket(ticket: string, instanceId: string, user: string): Promise<void> {
