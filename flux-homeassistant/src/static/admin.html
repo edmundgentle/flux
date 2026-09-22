@@ -44,7 +44,7 @@
   .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
   .dot.bad { background: var(--bad); box-shadow: 0 0 6px var(--bad); }
   main { padding: 24px; max-width: 1000px; margin: 0 auto; }
-  .login-panel, .panel {
+  .panel {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -99,10 +99,9 @@
   <span id="cloud-badge" class="badge"><span class="dot" id="cloud-dot"></span><span id="cloud-text">Unknown</span></span>
 </header>
 <main>
-  <section class="panel" id="instance-panel" style="display:none;">
+  <section class="panel" id="instance-panel">
     <div class="toolbar">
       <strong>Instance</strong>
-      <button class="secondary" id="instance-refresh-btn">Refresh</button>
     </div>
     <div class="toolbar" style="margin-top:10px;">
       <input type="text" id="instance-name-input" placeholder="Instance name" size="30" />
@@ -130,18 +129,9 @@
 
 <script>
 (function () {
-  const state = { token: localStorage.getItem('flux_admin_token') || '', users: [] };
-
   const el = (id) => document.getElementById(id);
-  const tokenInput = el('token-input');
-  const loginPanel = el('login-panel');
-  const usersPanel = el('users-panel');
-  const usersBody = el('users-body');
-  const loginError = el('login-error');
-  const usersError = el('users-error');
   const cloudDot = el('cloud-dot');
   const cloudText = el('cloud-text');
-  const cloudPanel = el('cloud-panel');
   const instancePanel = el('instance-panel');
   const instanceNameHeader = el('instance-name-header');
   const instanceNameInput = el('instance-name-input');
@@ -150,12 +140,6 @@
   const membersBody = el('members-body');
   const membersError = el('members-error');
   const inviteEmailInput = el('invite-email-input');
-
-  if (state.token) tokenInput.value = state.token;
-
-  function authHeaders() {
-    return { 'Authorization': 'Bearer ' + state.token };
-  }
 
   function setCloudStatus(connected) {
     cloudDot.className = 'dot ' + (connected ? 'ok' : 'bad');
@@ -167,7 +151,7 @@
     container.innerHTML = '<div class="muted">Loading...</div>';
     try {
       const url = 'api/admin/browse?user=' + encodeURIComponent(username) + '&path=' + encodeURIComponent(path);
-      const res = await fetch(url, { headers: authHeaders() });
+      const res = await fetch(url);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.message || ('Request failed with status ' + res.status));
@@ -253,26 +237,20 @@
       .replace(/"/g, '&quot;');
   }
 
-  el('connect-btn').addEventListener('click', () => {
-    state.token = tokenInput.value.trim();
-  });
-
   async function loadInstance() {
     membersError.textContent = '';
     try {
-      const res = await fetch('api/admin/instance', { headers: authHeaders() });
+      const res = await fetch('api/admin/instance');
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.success) {
         throw new Error(body.message || ('Request failed with status ' + res.status));
       }
-      instancePanel.style.display = 'block';
       instanceNameHeader.textContent = body.data.label ? ('— ' + body.data.label) : '';
       instanceNameInput.value = body.data.label || '';
-      instanceStorage.textContent = formatSize(body.data.total_storage_bytes || 0) + " (" + formatSize(body.data.available_storage_bytes || 0) + " free)";
+      instanceStorageInfo.textContent = formatSize(body.data.total_storage_bytes || 0) + " (" + formatSize(body.data.available_storage_bytes || 0) + " free)";
       renderMembers(body.data.members || []);
       setCloudStatus(body.data.bridge_connected);
     } catch (err) {
-      instancePanel.style.display = 'none';
       membersError.textContent = err.message;
     }
   }
@@ -321,7 +299,7 @@
     try {
       const res = await fetch('api/admin/instance', {
         method: 'PUT',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        headers: Object.assign({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ label }),
       });
       const body = await res.json().catch(() => ({}));
@@ -340,7 +318,7 @@
     try {
       const res = await fetch('api/admin/instance/members', {
         method: 'POST',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
       const body = await res.json().catch(() => ({}));
@@ -353,7 +331,7 @@
       membersError.textContent = err.message;
     }
   });
-  el('instance-refresh-btn').addEventListener('click', loadInstance);
+  loadInstance();
 })();
 </script>
 </body>
