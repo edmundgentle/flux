@@ -4,12 +4,44 @@ export type ChecklistItem = {
   completed: boolean;
 };
 
+export type TextBlockVariant = 'paragraph' | 'h1' | 'h2';
+
+export type TextBlock = {
+  id: string;
+  type: 'text';
+  text: string;
+  variant: TextBlockVariant;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  isChecklist?: boolean;
+  checklistItems?: ChecklistItem[];
+};
+
+export type AttachmentBlockKind = 'image' | 'video' | 'audio' | 'file' | 'link';
+
+export type AttachmentBlock = {
+  id: string;
+  type: 'attachment';
+  attachmentType: AttachmentBlockKind;
+  uri: string;
+  name: string;
+  mimeType?: string;
+  waveform?: number[];
+  durationMs?: number;
+  transcript?: string;
+  transcriptStatus?: 'pending' | 'ready' | 'error';
+};
+
+export type NoteBlock = TextBlock | AttachmentBlock;
+
 export type NoteAttachment = {
   id: string;
   name: string;
   uri: string;
   mimeType: string;
-  kind: 'image' | 'video' | 'audio' | 'file' | 'drawing';
+  kind: 'image' | 'video' | 'audio' | 'file' | 'drawing' | 'link';
   // Audio-only metadata used to render a waveform and transcript inline.
   waveform?: number[];
   durationMs?: number;

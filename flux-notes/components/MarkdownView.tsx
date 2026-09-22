@@ -1,8 +1,12 @@
 import React from 'react';
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { NoteColorTheme } from '../types/note';
+import { NoteBlock, NoteColorTheme } from '../types/note';
+import { parseBlocksFromMarkdown } from '../utils/markdownParser';
 import OEmbedCard from './OEmbedCard';
+import AudioAttachmentView from './AudioAttachmentView';
+import VideoAttachmentBlock from './VideoAttachmentBlock';
+import AspectRatioImage from './AspectRatioImage';
 
 type Props = {
   content: string;
@@ -15,188 +19,251 @@ export default function MarkdownView({ content, theme, numberOfLines }: Props) {
     return null;
   }
 
-  const lines = content.split('\n');
-  const renderedLines: React.ReactNode[] = [];
+  const blocks: NoteBlock[] = parseBlocksFromMarkdown(content);
+  const renderedElements: React.ReactNode[] = [];
 
-  for (let i = 0; i < lines.length; i++) {
-    if (numberOfLines && renderedLines.length >= numberOfLines) {
+  for (let i = 0; i < blocks.length; i++) {
+    if (numberOfLines && renderedElements.length >= numberOfLines) {
       break;
     }
 
-    const line = lines[i];
-    if (line.startsWith('---')) continue; // Skip frontmatter dividers if any
+    const block = blocks[i];
 
-    // Inline Markdown image attachment: ![caption](uri)
-    const imageMatch = line.match(/^!\[([^\]]*)\]\((.+)\)$/);
-    if (imageMatch) {
-      renderedLines.push(
-        <View key={i} style={styles.mediaBlock}>
-          <Image source={{ uri: imageMatch[2] }} style={styles.inlineImage} resizeMode="cover" />
-          {imageMatch[1] ? <Text style={[styles.mediaCaption, { color: theme.secondaryText }]}>{imageMatch[1]}</Text> : null}
-        </View>
-      );
-      continue;
-    }
+    if (block.type === 'text') {
+      if (block.isChecklist && block.checklistItems && block.checklistItems.length > 0) {
+        for (let j = 0; j < block.checklistItems.length; j++) {
+          if (numberOfLines && renderedElements.length >= numberOfLines) break;
+          const item = block.checklistItems[j];
+          renderedElements.push(
+            <View key={`${block.id}_item_${j}`} style={styles.checkboxRow}>
+              <Ionicons
+                name={item.completed ? 'checkbox' : 'square-outline'}
+                size={16}
+                color={item.completed ? theme.secondaryText : theme.accent}
+              />
+              <Text
+                style={[
+                  styles.checkboxText,
+                  { color: item.completed ? theme.secondaryText : theme.text },
+                  item.completed && styles.strikethrough,
+                  block.bold && styles.bold,
+                  block.italic && styles.italic,
+                  block.underline && styles.underline,
+                ]}
+                numberOfLines={numberOfLines ? 1 : undefined}
+              >
+                {item.text}
+              </Text>
+            </View>
+          );
+        }
+        continue;
+      }
 
-    // Inline link attachment: [caption](uri)
-    const attachmentMatch = line.match(/^\[([^\]]+)\]\((.+)\)$/);
-    if (attachmentMatch) {
-      renderedLines.push(
-        <View key={i} style={[styles.fileAttachment, { borderColor: theme.border, backgroundColor: theme.badgeBg }]}>
-          <Ionicons name="attach-outline" size={16} color={theme.accent} />
-          <Text style={[styles.fileAttachmentText, { color: theme.text }]}>{attachmentMatch[1]}</Text>
-        </View>
-      );
-      continue;
-    }
+      if (!block.text || !block.text.trim()) continue;
 
-    // Bare URL on its own line: render a rich oEmbed preview when available.
-    if (!numberOfLines && /^https?:\/\/\S+$/.test(line.trim())) {
-      renderedLines.push(<OEmbedCard key={i} url={line.trim()} theme={theme} />);
-      continue;
-    }
+      const lines = block.text.split('\n');
+      for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        if (numberOfLines && renderedElements.length >= numberOfLines) break;
+        const line = lines[lineIdx];
+        if (!line.trim()) continue;
 
-    // Headers
-    if (line.startsWith('# ')) {
-      renderedLines.push(
-        <Text key={i} style={[styles.h1, { color: theme.text }]} numberOfLines={1}>
-          {line.replace(/^#\s+/, '')}
-        </Text>
-      );
-      continue;
-    }
-    if (line.startsWith('## ')) {
-      renderedLines.push(
-        <Text key={i} style={[styles.h2, { color: theme.text }]} numberOfLines={1}>
-          {line.replace(/^##\s+/, '')}
-        </Text>
-      );
-      continue;
-    }
-    if (line.startsWith('### ')) {
-      renderedLines.push(
-        <Text key={i} style={[styles.h3, { color: theme.text }]} numberOfLines={1}>
-          {line.replace(/^###\s+/, '')}
-        </Text>
-      );
-      continue;
-    }
+        const styleList: any[] = [
+          styles.bodyText,
+          { color: theme.text },
+          block.variant === 'h1' && styles.h1,
+          block.variant === 'h2' && styles.h2,
+          block.bold && styles.bold,
+          block.italic && styles.italic,
+          block.underline && styles.underline,
+          block.strikethrough && styles.strikethrough,
+        ];
 
-    // Checkboxes
-    const checkMatch = line.match(/^\s*[-*]\s*\[([ xX])\]\s*(.*)$/);
-    if (checkMatch) {
-      const isDone = checkMatch[1].toLowerCase() === 'x';
-      const itemText = checkMatch[2];
-      renderedLines.push(
-        <View key={i} style={styles.checkboxRow}>
-          <Ionicons
-            name={isDone ? 'checkbox' : 'square-outline'}
-            size={16}
-            color={isDone ? theme.secondaryText : theme.accent}
-          />
+        renderedElements.push(
           <Text
-            style={[
-              styles.checkboxText,
-              { color: isDone ? theme.secondaryText : theme.text },
-              isDone && styles.strikethrough,
-            ]}
+            key={`${block.id}_line_${lineIdx}`}
+            style={styleList}
             numberOfLines={numberOfLines ? 1 : undefined}
           >
-            {itemText}
+            {formatInlineMarkdown(line)}
           </Text>
-        </View>
-      );
+        );
+      }
       continue;
     }
 
-    // Bullets
-    if (line.match(/^\s*[-*]\s+/)) {
-      const bulletText = line.replace(/^\s*[-*]\s+/, '');
-      renderedLines.push(
-        <View key={i} style={styles.bulletRow}>
-          <Text style={[styles.bulletDot, { color: theme.accent }]}>•</Text>
-          <Text
-            style={[styles.bodyText, { color: theme.text }]}
-            numberOfLines={numberOfLines ? 1 : undefined}
-          >
-            {bulletText}
-          </Text>
-        </View>
-      );
-      continue;
-    }
-
-    // Normal paragraph
-    if (line.trim().length > 0) {
-      renderedLines.push(
-        <Text
-          key={i}
-          style={[styles.bodyText, { color: theme.text }]}
-          numberOfLines={numberOfLines ? 1 : undefined}
-        >
-          {formatInlineMarkdown(line)}
-        </Text>
-      );
+    if (block.type === 'attachment') {
+      if (block.attachmentType === 'image') {
+        renderedElements.push(
+          <View key={block.id} style={styles.mediaBlock}>
+            <AspectRatioImage uri={block.uri} style={styles.inlineImage} />
+            {block.name ? (
+              <Text style={[styles.mediaCaption, { color: theme.secondaryText }]}>{block.name}</Text>
+            ) : null}
+          </View>
+        );
+      } else if (block.attachmentType === 'video') {
+        if (numberOfLines) {
+          renderedElements.push(
+            <View key={block.id} style={[styles.fileAttachment, { borderColor: theme.border, backgroundColor: theme.badgeBg }]}>
+              <Ionicons name="videocam-outline" size={16} color={theme.accent} />
+              <Text style={[styles.fileAttachmentText, { color: theme.text }]} numberOfLines={1}>
+                {block.name || 'Video'}
+              </Text>
+            </View>
+          );
+        } else {
+          renderedElements.push(
+            <VideoAttachmentBlock
+              key={block.id}
+              uri={block.uri}
+              name={block.name}
+              theme={theme}
+            />
+          );
+        }
+      } else if (block.attachmentType === 'audio') {
+        if (numberOfLines) {
+          renderedElements.push(
+            <View key={block.id} style={[styles.fileAttachment, { borderColor: theme.border, backgroundColor: theme.badgeBg }]}>
+              <Ionicons name="musical-notes-outline" size={16} color={theme.accent} />
+              <Text style={[styles.fileAttachmentText, { color: theme.text }]} numberOfLines={1}>
+                {block.name || 'Audio clip'}
+              </Text>
+            </View>
+          );
+        } else {
+          renderedElements.push(
+            <AudioAttachmentView
+              key={block.id}
+              uri={block.uri}
+              name={block.name}
+              waveform={block.waveform}
+              durationMs={block.durationMs}
+              transcript={block.transcript}
+              transcriptStatus={block.transcriptStatus}
+              theme={theme}
+            />
+          );
+        }
+      } else if (block.attachmentType === 'link') {
+        if (!numberOfLines && /^https?:\/\/\S+$/.test(block.uri.trim())) {
+          renderedElements.push(<OEmbedCard key={block.id} url={block.uri.trim()} theme={theme} />);
+        } else {
+          renderedElements.push(
+            <Pressable
+              key={block.id}
+              onPress={() => void Linking.openURL(block.uri).catch(() => {})}
+              style={[styles.fileAttachment, { borderColor: theme.border, backgroundColor: theme.badgeBg }]}
+            >
+              <Ionicons name="globe-outline" size={16} color={theme.accent} />
+              <Text style={[styles.fileAttachmentText, { color: theme.accent, textDecorationLine: 'underline' }]} numberOfLines={1}>
+                {block.name || block.uri}
+              </Text>
+            </Pressable>
+          );
+        }
+      } else if (block.attachmentType === 'file') {
+        renderedElements.push(
+          <View key={block.id} style={[styles.fileAttachment, { borderColor: theme.border, backgroundColor: theme.badgeBg }]}>
+            <Ionicons name="attach-outline" size={16} color={theme.accent} />
+            <Text style={[styles.fileAttachmentText, { color: theme.text }]} numberOfLines={1}>
+              {block.name || 'File attachment'}
+            </Text>
+          </View>
+        );
+      }
     }
   }
 
-  return <View style={styles.container}>{renderedLines}</View>;
+  return <View style={styles.container}>{renderedElements}</View>;
 }
 
-function formatInlineMarkdown(text: string): React.ReactNode[] {
-  // Simple bold/italic inline parser
-  const parts = text.split(/(\*\*.*?\*\*|\*.*?\*|`.*?`)/g);
+function formatInlineMarkdown(text: string, inheritedStyle: any = {}): React.ReactNode {
+  if (!text) return null;
+  const parts = text.split(/(\*\*[\s\S]*?\*\*|\*[\s\S]*?\*|`[\s\S]*?`|~~[\s\S]*?~~|<u>[\s\S]*?<\/u>)/g);
   return parts.map((part, index) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
+    if (!part) return null;
+    if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+      const nextStyle = { ...inheritedStyle, fontWeight: '700' as const };
       return (
-        <Text key={index} style={{ fontWeight: '700' }}>
-          {part.slice(2, -2)}
+        <Text key={index} style={nextStyle}>
+          {formatInlineMarkdown(part.slice(2, -2), nextStyle)}
         </Text>
       );
     }
-    if (part.startsWith('*') && part.endsWith('*')) {
+    if (part.startsWith('*') && part.endsWith('*') && part.length >= 2) {
+      const nextStyle = { ...inheritedStyle, fontStyle: 'italic' as const };
       return (
-        <Text key={index} style={{ fontStyle: 'italic' }}>
+        <Text key={index} style={nextStyle}>
+          {formatInlineMarkdown(part.slice(1, -1), nextStyle)}
+        </Text>
+      );
+    }
+    if (part.startsWith('~~') && part.endsWith('~~') && part.length >= 4) {
+      const nextStyle = { ...inheritedStyle, textDecorationLine: 'line-through' as const };
+      return (
+        <Text key={index} style={nextStyle}>
+          {formatInlineMarkdown(part.slice(2, -2), nextStyle)}
+        </Text>
+      );
+    }
+    if (part.startsWith('<u>') && part.endsWith('</u>') && part.length >= 7) {
+      const nextStyle = { ...inheritedStyle, textDecorationLine: 'underline' as const };
+      return (
+        <Text key={index} style={nextStyle}>
+          {formatInlineMarkdown(part.slice(3, -4), nextStyle)}
+        </Text>
+      );
+    }
+    if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+      return (
+        <Text key={index} style={[styles.inlineCode, inheritedStyle]}>
           {part.slice(1, -1)}
         </Text>
       );
     }
-    if (part.startsWith('`') && part.endsWith('`')) {
-      return (
-        <Text key={index} style={styles.inlineCode}>
-          {part.slice(1, -1)}
-        </Text>
-      );
-    }
-    return part;
+    return (
+      <Text key={index} style={inheritedStyle}>
+        {part}
+      </Text>
+    );
   });
 }
 
 const styles = StyleSheet.create({
   container: {
-    gap: 4,
+    gap: 6,
   },
   h1: {
-    fontSize: 18,
+    fontSize: 20,
+    fontWeight: '700',
+    marginTop: 6,
+    marginBottom: 2,
+    lineHeight: 26,
+  },
+  h2: {
+    fontSize: 17,
     fontWeight: '700',
     marginTop: 4,
     marginBottom: 2,
-  },
-  h2: {
-    fontSize: 16,
-    fontWeight: '700',
-    marginTop: 3,
-    marginBottom: 2,
-  },
-  h3: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginTop: 2,
-    marginBottom: 1,
+    lineHeight: 22,
   },
   bodyText: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  bold: {
+    fontWeight: '700',
+  },
+  italic: {
+    fontStyle: 'italic',
+  },
+  underline: {
+    textDecorationLine: 'underline',
+  },
+  strikethrough: {
+    textDecorationLine: 'line-through',
   },
   checkboxRow: {
     flexDirection: 'row',
@@ -205,33 +272,43 @@ const styles = StyleSheet.create({
     marginVertical: 2,
   },
   checkboxText: {
-    fontSize: 14,
+    fontSize: 15,
     flex: 1,
   },
-  bulletRow: {
+  mediaBlock: {
+    marginVertical: 4,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  inlineImage: {
+    width: '100%',
+    borderRadius: 10,
+    backgroundColor: '#00000010',
+  },
+  mediaCaption: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  fileAttachment: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-    marginVertical: 1,
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginVertical: 2,
   },
-  bulletDot: {
-    fontSize: 16,
-    lineHeight: 20,
-  },
-  strikethrough: {
-    textDecorationLine: 'line-through',
-    opacity: 0.7,
+  fileAttachmentText: {
+    fontSize: 13,
+    fontWeight: '500',
+    flex: 1,
   },
   inlineCode: {
     fontFamily: 'monospace',
     backgroundColor: 'rgba(0,0,0,0.06)',
-    borderRadius: 4,
     paddingHorizontal: 4,
+    borderRadius: 4,
     fontSize: 13,
   },
-  mediaBlock: { marginVertical: 6 },
-  inlineImage: { width: '100%', height: 190, borderRadius: 10, backgroundColor: '#e2e8f0' },
-  mediaCaption: { fontSize: 12, marginTop: 4 },
-  fileAttachment: { flexDirection: 'row', alignItems: 'center', gap: 7, borderWidth: 1, borderRadius: 8, padding: 9, marginVertical: 3 },
-  fileAttachmentText: { fontSize: 13, flex: 1 },
 });

@@ -1,4 +1,4 @@
-use crate::auth::{AccountManager, LoginResponse};
+use crate::auth::{AccountManager};
 use crate::config::ConfigManager;
 use crate::files::FileManager;
 use crate::search::{SearchManager, SearchResult};
@@ -153,8 +153,6 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/api/storage/mount", post(mount_device))
         .route("/api/storage/umount", post(umount_device))
         // File endpoints
-        .route("/api/auth/register", post(register_user))
-        .route("/api/auth/login", post(login_user))
         .route("/api/files/upload", post(upload_file))
         .route("/api/files/download", get(download_file))
         .route("/api/files", delete(delete_file))
@@ -165,7 +163,6 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/api/shares/unshare", post(unshare_file))
         .route("/api/shares/list", get(list_shares))
         // Admin dashboard endpoints
-        .route("/api/admin/users", get(list_admin_users))
         .route("/api/admin/browse", get(browse_user_files))
         .route("/api/admin/instance", get(get_instance_info).put(rename_instance))
         .route("/api/admin/instance/members", post(invite_instance_member))
@@ -300,58 +297,6 @@ fn check_path_write_permission(user: &str, target_path: &Path, data_dir: &str) -
 // ==========================================
 // Handlers
 // ==========================================
-
-async fn register_user(
-    State(state): State<AppState>,
-    Json(payload): Json<RegisterRequest>,
-) -> Result<Json<ApiResponse<LoginResponse>>, (StatusCode, Json<ApiResponse<()>>)> {
-    match state.account_manager.register(&payload.username, &payload.password, payload.display_name, None) {
-        Ok(_) => match state.account_manager.login(&payload.username, &payload.password) {
-            Ok(session) => Ok(Json(ApiResponse {
-                success: true,
-                message: "Account created and logged in".to_string(),
-                data: Some(session),
-            })),
-            Err(e) => Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse {
-                    success: false,
-                    message: format!("Account created but login failed: {}", e),
-                    data: None,
-                }),
-            )),
-        },
-        Err(e) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse {
-                success: false,
-                message: e,
-                data: None,
-            }),
-        )),
-    }
-}
-
-async fn login_user(
-    State(state): State<AppState>,
-    Json(payload): Json<LoginRequest>,
-) -> Result<Json<ApiResponse<LoginResponse>>, (StatusCode, Json<ApiResponse<()>>)> {
-    match state.account_manager.login(&payload.username, &payload.password) {
-        Ok(session) => Ok(Json(ApiResponse {
-            success: true,
-            message: "Logged in successfully".to_string(),
-            data: Some(session),
-        })),
-        Err(e) => Err((
-            StatusCode::UNAUTHORIZED,
-            Json(ApiResponse {
-                success: false,
-                message: e,
-                data: None,
-            }),
-        )),
-    }
-}
 
 async fn list_mounts(
     headers: HeaderMap,
@@ -853,52 +798,14 @@ async fn require_admin(
     if is_ingress_request(headers) {
         return Ok("ingress".to_string());
     }
-    let requesting_user = get_request_user(headers, None, None, &state.account_manager)?;
-    if !state.account_manager.is_admin(&requesting_user) {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ApiResponse {
-                success: false,
-                message: "Only 'admin' can access the dashboard".to_string(),
-                data: None,
-            }),
-        ));
-    }
-    Ok(requesting_user)
-}
-
-async fn list_admin_users(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-) -> Result<Json<AdminUsersResponse>, (StatusCode, Json<ApiResponse<()>>)> {
-    require_admin(&headers, &state).await?;
-
-    let config = state.config_manager.get_config();
-    let mut users: Vec<AccountSummary> = state
-        .account_manager
-        .list_accounts()
-        .into_iter()
-        .map(|account| {
-            let normalized_user = crate::auth::AccountManager::normalize_username(&account.username);
-            let storage_bytes = resolve_user_workspace_root(&config.data_dir, &normalized_user)
-                .map(|root| dir_size(&root))
-                .unwrap_or(0);
-            AccountSummary {
-                username: account.username,
-                display_name: account.display_name,
-                role: account.role,
-                created_at: account.created_at,
-                storage_bytes,
-            }
-        })
-        .collect();
-    users.sort_by(|a, b| a.username.cmp(&b.username));
-
-    Ok(Json(AdminUsersResponse {
-        cloud_connected: state.bridge_connected.load(Ordering::SeqCst),
-        instance_id: config.instance_id,
-        users,
-    }))
+    return Err((
+        StatusCode::FORBIDDEN,
+        Json(ApiResponse {
+            success: false,
+            message: "The dashboard can only be accessed through Home Assistant".to_string(),
+            data: None,
+        }),
+    ));
 }
 
 /// Recursively sums the size of all files under `path`, skipping entries it cannot read.
@@ -916,6 +823,67 @@ fn dir_size(path: &Path) -> u64 {
         }
     }
     total
+}
+
+fn instance_storage_bytes(data_dir: &str) -> u64 {
+    let data_root = Path::new(data_dir);
+    let Ok(read_dir) = fs::read_dir(data_root) else { return 0 };
+
+    read_dir
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            path.is_dir().then(|| dir_size(&path))
+        })
+        .sum()
+}
+
+fn attach_instance_metadata(body: &mut serde_json::Value, bridge_connected: bool, State(state): State<AppState>) {
+    if body.get("success") != Some(&serde_json::Value::Bool(true)) {
+        return;
+    }
+
+    let config = state.config_manager.get_config();
+
+    //get the total size of the storage medium, and available space
+    let total_storage_bytes = instance_storage_bytes(&config.data_dir);
+    let available_storage_bytes = fs::metadata(&config.data_dir)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+
+    let Some(data) = body.get_mut("data") else {
+        let mut data_obj = serde_json::Map::new();
+        data_obj.insert("bridge_connected".to_string(), serde_json::Value::Bool(bridge_connected));
+        data_obj.insert("total_storage_bytes".to_string(), serde_json::Value::Number(total_storage_bytes.into()));
+        data_obj.insert("available_storage_bytes".to_string(), serde_json::Value::Number(available_storage_bytes.into()));
+        body["data"] = serde_json::Value::Object(data_obj);
+        return;
+    };
+
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert("bridge_connected".to_string(), serde_json::Value::Bool(bridge_connected));
+        obj.insert("total_storage_bytes".to_string(), serde_json::Value::Number(total_storage_bytes.into()));
+        obj.insert("available_storage_bytes".to_string(), serde_json::Value::Number(available_storage_bytes.into()));
+    }
+
+    //for each user (in data->members), work out storage used:
+    if let Some(obj) = data.as_object_mut() {
+        if let Some(members) = obj.get_mut("members") {
+            if let Some(members_array) = members.as_array_mut() {
+                for member in members_array {
+                    if let Some(member_obj) = member.as_object_mut() {
+                        if let Some(username) = member_obj.get("email").and_then(|v| v.as_str()) {
+                            let normalized_user = crate::auth::AccountManager::normalize_username(username);
+                            let storage_bytes = resolve_user_workspace_root(&config.data_dir, &normalized_user)
+                                .map(|root| dir_size(&root))
+                                .unwrap_or(0);
+                            member_obj.insert("storage_bytes".to_string(), serde_json::Value::Number(storage_bytes.into()));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Resolves a user's workspace root, preferring the current layout over the legacy `users/` one.
@@ -1112,9 +1080,28 @@ async fn get_instance_info(headers: HeaderMap, State(state): State<AppState>) ->
     };
 
     let client = reqwest::Client::new();
+    let bridge_connected = state.bridge_connected.load(Ordering::SeqCst);
     let url = format!("{}/api/instances/{}", crate::definitions::CLOUD_URL, instance_id);
+
     match client.get(&url).bearer_auth(&token).send().await {
-        Ok(resp) => forward_cloud_json(resp).await,
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            match resp.json::<serde_json::Value>().await {
+                Ok(mut body) => {
+                    attach_instance_metadata(&mut body, bridge_connected, State(state.clone()));
+                    (status, Json(body)).into_response()
+                }
+                Err(_) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ApiResponse::<()> {
+                        success: false,
+                        message: "Invalid response from cloud relay".to_string(),
+                        data: None,
+                    }),
+                )
+                    .into_response(),
+            }
+        }
         Err(e) => cloud_unreachable(e).into_response(),
     }
 }

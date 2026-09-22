@@ -143,34 +143,61 @@ impl WebSocketBridge {
                                 }
                             });
 
-                            while let Some(msg_res) = ws_read.next().await {
-                                match msg_res {
-                                    Ok(Message::Text(text)) => {
-                                        let sm = search_manager.clone();
-                                        let reg = share_registry.clone();
-                                        let sender = tx.clone();
+                            // Actively ping the relay and watch for inactivity so a silently
+                            // dropped connection (e.g. NAT/proxy timeout with no TCP FIN) is
+                            // detected and reconnected instead of hanging indefinitely.
+                            let mut last_activity = tokio::time::Instant::now();
+                            let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
+                            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                            const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(90);
 
-                                        let account_manager = account_manager.clone();
-                                        let data_dir = data_dir.clone();
-                                        let tunnel_token = ws_token.clone();
-                                        tokio::spawn(async move {
-                                            if let Err(e) = Self::handle_request(&text, &sm, &reg, &account_manager, &data_dir, tunnel_token.as_deref(), sender).await {
-                                                error!("Error processing bridge request: {}", e);
+                            'read_loop: loop {
+                                tokio::select! {
+                                    _ = heartbeat.tick() => {
+                                        if last_activity.elapsed() > INACTIVITY_TIMEOUT {
+                                            warn!("No activity from cloud relay for {:?}, reconnecting...", last_activity.elapsed());
+                                            break 'read_loop;
+                                        }
+                                        if tx.send(Message::Ping(Vec::new())).is_err() {
+                                            break 'read_loop;
+                                        }
+                                    }
+                                    msg_res = ws_read.next() => {
+                                        let Some(msg_res) = msg_res else {
+                                            info!("WebSocket bridge stream ended, attempting reconnect...");
+                                            break 'read_loop;
+                                        };
+                                        last_activity = tokio::time::Instant::now();
+                                        match msg_res {
+                                            Ok(Message::Text(text)) => {
+                                                let sm = search_manager.clone();
+                                                let reg = share_registry.clone();
+                                                let sender = tx.clone();
+
+                                                let account_manager = account_manager.clone();
+                                                let data_dir = data_dir.clone();
+                                                let tunnel_token = ws_token.clone();
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = Self::handle_request(&text, &sm, &reg, &account_manager, &data_dir, tunnel_token.as_deref(), sender).await {
+                                                        error!("Error processing bridge request: {}", e);
+                                                    }
+                                                });
                                             }
-                                        });
+                                            Ok(Message::Ping(payload)) => {
+                                                let _ = tx.send(Message::Pong(payload));
+                                            }
+                                            Ok(Message::Pong(_)) => {}
+                                            Ok(Message::Close(frame)) => {
+                                                info!("Received WebSocket close frame from server: {:?}", frame);
+                                                break 'read_loop;
+                                            }
+                                            Err(e) => {
+                                                error!("WebSocket connection error: {}", e);
+                                                break 'read_loop;
+                                            }
+                                            _ => {}
+                                        }
                                     }
-                                    Ok(Message::Ping(payload)) => {
-                                        let _ = tx.send(Message::Pong(payload));
-                                    }
-                                    Ok(Message::Close(frame)) => {
-                                        info!("Received WebSocket close frame from server: {:?}", frame);
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        error!("WebSocket connection error: {}", e);
-                                        break;
-                                    }
-                                    _ => {}
                                 }
                             }
 

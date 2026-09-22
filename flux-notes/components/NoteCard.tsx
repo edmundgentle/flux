@@ -3,7 +3,6 @@ import { Pressable, StyleSheet, Text, View, GestureResponderEvent } from 'react-
 import { Ionicons } from '@expo/vector-icons';
 import { NOTE_COLORS, NoteItem } from '../types/note';
 import MarkdownView from './MarkdownView';
-import AudioAttachmentView from './AudioAttachmentView';
 
 type Props = {
   note: NoteItem;
@@ -108,34 +107,6 @@ export default function NoteCard({
           {note.labels.map((label, index) => (
             <View key={index} style={[styles.labelChip, { backgroundColor: theme.badgeBg }]}>
               <Text style={[styles.labelChipText, { color: theme.text }]}>#{label}</Text>
-            </View>
-          ))}
-        </View>
-      ) : null}
-
-      {note.attachments && note.attachments.some((a) => a.kind === 'audio') ? (
-        <View>
-          {note.attachments.filter((a) => a.kind === 'audio').slice(0, 2).map((attachment) => (
-            <AudioAttachmentView
-              key={attachment.id}
-              uri={attachment.uri}
-              name={attachment.name}
-              waveform={attachment.waveform}
-              durationMs={attachment.durationMs}
-              transcript={attachment.transcript}
-              transcriptStatus={attachment.transcriptStatus}
-              theme={theme}
-            />
-          ))}
-        </View>
-      ) : null}
-
-      {note.attachments && note.attachments.some((a) => a.kind !== 'audio') ? (
-        <View style={styles.attachmentsRow}>
-          {note.attachments.filter((a) => a.kind !== 'audio').slice(0, 4).map((attachment) => (
-            <View key={attachment.id} style={[styles.attachmentChip, { backgroundColor: theme.badgeBg }]}>
-              <Ionicons name={attachment.kind === 'image' ? 'image-outline' : attachment.kind === 'video' ? 'videocam-outline' : 'attach-outline'} size={13} color={theme.text} />
-              <Text style={[styles.attachmentText, { color: theme.text }]} numberOfLines={1}>{attachment.name}</Text>
             </View>
           ))}
         </View>

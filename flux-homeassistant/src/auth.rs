@@ -1,11 +1,11 @@
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::{hash, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use tracing::{info, warn};
+use tracing::{warn};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,10 +159,6 @@ impl AccountManager {
         hash(password, DEFAULT_COST).map_err(|e| format!("Failed to hash password: {}", e))
     }
 
-    fn verify_password(password_hash: &str, password: &str) -> Result<bool, String> {
-        verify(password, password_hash).map_err(|e| format!("Failed to verify password: {}", e))
-    }
-
     fn hash_token(token: &str) -> String {
         let digest = Sha256::digest(token.as_bytes());
         format!("{digest:x}")
@@ -178,90 +174,6 @@ impl AccountManager {
             }
         }
         Ok(())
-    }
-
-    pub fn register(&self, username: &str, password: &str, display_name: Option<String>, is_admin: Option<bool>) -> Result<(), String> {
-        let normalized = Self::normalize_username(username);
-        if normalized.len() < 3 || normalized.len() > 64 {
-            return Err("Username must be between 3 and 64 characters long".to_string());
-        }
-        if !normalized.chars().enumerate().all(|(index, character)| {
-            (index == 0 && character.is_ascii_alphanumeric())
-                || (index > 0 && (character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | '@')))
-        }) {
-            return Err("Username contains unsupported characters".to_string());
-        }
-        if password.trim().is_empty() {
-            return Err("Password cannot be empty".to_string());
-        }
-
-        let is_first_account = {
-            let accounts_guard = self.accounts.read().unwrap();
-            if accounts_guard.contains_key(&normalized) {
-                return Err(format!("User '{}' already exists", normalized));
-            }
-            accounts_guard.is_empty()
-        };
-
-        let role = match is_admin {
-            Some(true) => "admin".to_string(),
-            _ if is_first_account => "admin".to_string(),
-            _ => "user".to_string(),
-        };
-
-        let password_hash = Self::hash_password(password)?;
-        let account = Account {
-            username: normalized.clone(),
-            display_name: display_name.filter(|value| !value.trim().is_empty()),
-            password_hash,
-            role: role.clone(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
-
-        {
-            let mut accounts_guard = self.accounts.write().unwrap();
-            accounts_guard.insert(normalized.clone(), account);
-        }
-
-        self.ensure_user_workspace(&normalized)?;
-        self.save_accounts()?;
-        info!("Registered new account: {} ({})", normalized, role);
-        Ok(())
-    }
-
-    pub fn login(&self, username: &str, password: &str) -> Result<LoginResponse, String> {
-        let normalized = Self::normalize_username(username);
-        let accounts_guard = self.accounts.read().unwrap();
-        let account = accounts_guard
-            .get(&normalized)
-            .ok_or_else(|| format!("Unknown user '{}'", normalized))?;
-
-        let password_valid = Self::verify_password(&account.password_hash, password)?;
-        if !password_valid {
-            return Err("Invalid password".to_string());
-        }
-
-        let token = Uuid::new_v4().to_string();
-        let expires_at = (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339();
-        let session = Session {
-            username: normalized.clone(),
-            token_hash: Self::hash_token(&token),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: expires_at.clone(),
-        };
-
-        drop(accounts_guard);
-
-        {
-            let mut sessions_guard = self.sessions.write().unwrap();
-            sessions_guard.insert(session.token_hash.clone(), session);
-        }
-
-        let _ = self.save_sessions();
-        Ok(LoginResponse {
-            user: normalized,
-            token,
-        })
     }
 
     pub fn create_cloud_session(&self, username: &str) -> Result<LoginResponse, String> {
@@ -322,17 +234,6 @@ impl AccountManager {
         user
     }
 
-    #[allow(dead_code)]
-    pub fn logout(&self, token: &str) -> Result<(), String> {
-        let mut sessions_guard = self.sessions.write().unwrap();
-        let removed = sessions_guard.remove(&Self::hash_token(token)).is_some();
-        drop(sessions_guard);
-        if removed {
-            self.save_sessions()?;
-        }
-        Ok(())
-    }
-
     pub fn is_admin(&self, username: &str) -> bool {
         let normalized = Self::normalize_username(username);
         let accounts_guard = self.accounts.read().unwrap();
@@ -341,74 +242,5 @@ impl AccountManager {
             .map(|account| account.role == "admin")
             .unwrap_or(false)
     }
-
-    #[allow(dead_code)]
-    pub fn list_accounts(&self) -> Vec<Account> {
-        let accounts_guard = self.accounts.read().unwrap();
-        accounts_guard.values().cloned().collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn change_password(&self, username: &str, old_password: &str, new_password: &str) -> Result<(), String> {
-        let normalized = Self::normalize_username(username);
-        if new_password.trim().is_empty() {
-            return Err("New password cannot be empty".to_string());
-        }
-
-        let mut accounts_guard = self.accounts.write().unwrap();
-        let account = accounts_guard
-            .get_mut(&normalized)
-            .ok_or_else(|| format!("Unknown user '{}'", normalized))?;
-
-        let password_valid = Self::verify_password(&account.password_hash, old_password)?;
-        if !password_valid {
-            return Err("Invalid current password".to_string());
-        }
-
-        account.password_hash = Self::hash_password(new_password)?;
-        drop(accounts_guard);
-        self.save_accounts()?;
-        Ok(())
-    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn register_and_login_work() {
-        let dir = tempdir().unwrap();
-        let manager = AccountManager::new(dir.path().to_str().unwrap());
-
-        manager.register("alice", "supersecret", Some("Alice".to_string()), None).unwrap();
-        let response = manager.login("alice", "supersecret").unwrap();
-
-        assert_eq!(response.user, "alice");
-        assert!(manager.authenticate_token(&response.token).is_some());
-    }
-
-    #[test]
-    fn cloud_session_creates_a_local_account() {
-        let dir = tempdir().unwrap();
-        let manager = AccountManager::new(dir.path().to_str().unwrap());
-
-        let response = manager.create_cloud_session("alice@example.com").unwrap();
-        assert_eq!(response.user, "alice@example.com");
-        assert!(manager.authenticate_token(&response.token).is_some());
-        assert!(manager.list_accounts().iter().any(|account| account.username == "alice@example.com"));
-        assert!(dir.path().join("alice@example.com").join("Photos").exists());
-    }
-
-    #[test]
-    fn registration_rejects_path_traversal_usernames() {
-        let dir = tempdir().unwrap();
-        let manager = AccountManager::new(dir.path().to_str().unwrap());
-
-        let result = manager.register("../outside", "supersecret", None, None);
-
-        assert!(result.is_err());
-        assert!(!dir.path().join("..\noutside").exists());
-    }
-}

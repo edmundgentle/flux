@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Flux Admin Dashboard</title>
+<title>Flux</title>
 <style>
   :root {
     color-scheme: dark;
@@ -95,40 +95,22 @@
 </head>
 <body>
 <header>
-  <h1>Flux Admin Dashboard <span class="muted" id="instance-name-header"></span></h1>
+  <h1>Flux <span class="muted" id="instance-name-header"></span></h1>
   <span id="cloud-badge" class="badge"><span class="dot" id="cloud-dot"></span><span id="cloud-text">Unknown</span></span>
 </header>
 <main>
-  <section class="login-panel" id="login-panel">
-    <div class="toolbar">
-      <input type="text" id="token-input" placeholder="Paste admin auth token" size="40" />
-      <button id="connect-btn">Connect</button>
-    </div>
-    <div class="muted">Log in via <code>/api/auth/login</code> and paste the returned token here. Only admin accounts can view this dashboard.</div>
-    <div class="error" id="login-error"></div>
-  </section>
-
-  <section class="panel" id="cloud-panel" style="display:none;">
-    <div class="toolbar">
-      <strong>Cloud Connection</strong>
-      <button class="secondary" id="cloud-refresh-btn">Refresh</button>
-    </div>
-    <div class="muted">This instance keeps an outbound WebSocket tunnel open to the cloud relay for remote access, using the instance ID and tunnel token issued when it was registered via <code>/api/auth/register</code>. It can also be reached directly on the local network (e.g. <code>http://homeassistant.local:8080/</code>) using the same account credentials via the SDK's local (LAN) mode.</div>
-    <div class="error" id="cloud-error"></div>
-  </section>
-
   <section class="panel" id="instance-panel" style="display:none;">
     <div class="toolbar">
       <strong>Instance</strong>
       <button class="secondary" id="instance-refresh-btn">Refresh</button>
     </div>
-    <div class="muted">The instance name is shown to anyone whose account is tied to it (e.g. "Smith House").</div>
     <div class="toolbar" style="margin-top:10px;">
       <input type="text" id="instance-name-input" placeholder="Instance name" size="30" />
       <button id="instance-rename-btn">Save name</button>
     </div>
     <div class="error" id="instance-name-error"></div>
 
+    <div id="instance-storage-info"></div>
     <div class="toolbar" style="margin-top:16px;">
       <strong>Members</strong>
     </div>
@@ -142,22 +124,7 @@
       <input type="text" id="invite-email-input" placeholder="Email address" size="30" />
       <button id="invite-btn">Add / Invite</button>
     </div>
-    <div class="muted">Entering an email that's already registered ties them to this instance immediately. Otherwise, an invite is sent (placeholder — no email service is linked yet) and they're tied to this instance as soon as they register.</div>
     <div class="error" id="members-error"></div>
-  </section>
-
-  <section class="panel" id="users-panel" style="display:none;">
-    <div class="toolbar">
-      <strong>Connected Users</strong>
-      <button class="secondary" id="refresh-btn">Refresh</button>
-    </div>
-    <table>
-      <thead>
-        <tr><th>Username</th><th>Display Name</th><th>Role</th><th>Storage Used</th><th>Created</th><th></th></tr>
-      </thead>
-      <tbody id="users-body"></tbody>
-    </table>
-    <div class="error" id="users-error"></div>
   </section>
 </main>
 
@@ -175,11 +142,11 @@
   const cloudDot = el('cloud-dot');
   const cloudText = el('cloud-text');
   const cloudPanel = el('cloud-panel');
-  const cloudError = el('cloud-error');
   const instancePanel = el('instance-panel');
   const instanceNameHeader = el('instance-name-header');
   const instanceNameInput = el('instance-name-input');
   const instanceNameError = el('instance-name-error');
+  const instanceStorageInfo = el('instance-storage-info');
   const membersBody = el('members-body');
   const membersError = el('members-error');
   const inviteEmailInput = el('invite-email-input');
@@ -193,69 +160,6 @@
   function setCloudStatus(connected) {
     cloudDot.className = 'dot ' + (connected ? 'ok' : 'bad');
     cloudText.textContent = connected ? 'Cloud Connected' : 'Cloud Disconnected';
-  }
-
-  async function loadUsers() {
-    usersError.textContent = '';
-    try {
-      const res = await fetch('api/admin/users', { headers: authHeaders() });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.message || ('Request failed with status ' + res.status));
-      }
-      const data = await res.json();
-      state.users = data.users;
-      setCloudStatus(data.cloud_connected);
-      renderUsers();
-      loginPanel.style.display = 'none';
-      usersPanel.style.display = 'block';
-      cloudPanel.style.display = 'block';
-      localStorage.setItem('flux_admin_token', state.token);
-      loadInstance();
-    } catch (err) {
-      loginError.textContent = err.message;
-      usersPanel.style.display = 'none';
-      cloudPanel.style.display = 'none';
-      loginPanel.style.display = 'block';
-    }
-  }
-
-  function renderUsers() {
-    usersBody.innerHTML = '';
-    for (const user of state.users) {
-      const row = document.createElement('tr');
-      row.className = 'user-row';
-      row.innerHTML =
-        '<td>' + escapeHtml(user.username) + '</td>' +
-        '<td>' + escapeHtml(user.display_name || '-') + '</td>' +
-        '<td class="' + (user.role === 'admin' ? 'role-admin' : '') + '">' + escapeHtml(user.role) + '</td>' +
-        '<td>' + escapeHtml(formatSize(user.storage_bytes || 0)) + '</td>' +
-        '<td>' + escapeHtml(formatDate(user.created_at)) + '</td>' +
-        '<td><button class="secondary browse-btn">Browse Files</button></td>';
-
-      const browserRow = document.createElement('tr');
-      const browserCell = document.createElement('td');
-      browserCell.colSpan = 6;
-      const browser = document.createElement('div');
-      browser.className = 'file-browser';
-      browser.dataset.user = user.username;
-      browser.dataset.path = '';
-      browserCell.appendChild(browser);
-      browserRow.appendChild(browserCell);
-
-      row.querySelector('.browse-btn').addEventListener('click', () => {
-        const isOpen = browser.classList.contains('open');
-        if (isOpen) {
-          browser.classList.remove('open');
-        } else {
-          browser.classList.add('open');
-          loadBrowser(browser, user.username, '');
-        }
-      });
-
-      usersBody.appendChild(row);
-      usersBody.appendChild(browserRow);
-    }
   }
 
   async function loadBrowser(container, username, path) {
@@ -351,10 +255,7 @@
 
   el('connect-btn').addEventListener('click', () => {
     state.token = tokenInput.value.trim();
-    loadUsers();
   });
-  el('refresh-btn').addEventListener('click', loadUsers);
-  el('cloud-refresh-btn').addEventListener('click', loadUsers);
 
   async function loadInstance() {
     membersError.textContent = '';
@@ -367,7 +268,9 @@
       instancePanel.style.display = 'block';
       instanceNameHeader.textContent = body.data.label ? ('— ' + body.data.label) : '';
       instanceNameInput.value = body.data.label || '';
+      instanceStorage.textContent = formatSize(body.data.total_storage_bytes || 0) + " (" + formatSize(body.data.available_storage_bytes || 0) + " free)";
       renderMembers(body.data.members || []);
+      setCloudStatus(body.data.bridge_connected);
     } catch (err) {
       instancePanel.style.display = 'none';
       membersError.textContent = err.message;
@@ -381,8 +284,34 @@
       row.innerHTML =
         '<td>' + escapeHtml(member.email) + '</td>' +
         '<td>' + (member.joined ? 'Joined' : 'Invited (pending)') + '</td>' +
-        '<td>' + escapeHtml(formatDate(member.invitedAt)) + '</td>';
+        '<td>' + escapeHtml(formatDate(member.invitedAt)) + '</td>'+
+        '<td>' + escapeHtml(formatSize(member.storageBytes || 0)) + '</td>'+
+        '<td><button class="secondary browse-btn">Browse Files</button></td>';
       membersBody.appendChild(row);
+
+      const browserRow = document.createElement('tr');
+      const browserCell = document.createElement('td');
+      browserCell.colSpan = 6;
+      const browser = document.createElement('div');
+      browser.className = 'file-browser';
+      browser.dataset.user = member.email;
+      browser.dataset.path = '';
+      browserCell.appendChild(browser);
+      browserRow.appendChild(browserCell);
+
+      row.querySelector('.browse-btn').addEventListener('click', () => {
+        const isOpen = browser.classList.contains('open');
+        if (isOpen) {
+          browser.classList.remove('open');
+        } else {
+          browser.classList.add('open');
+          loadBrowser(browser, member.email, '');
+        }
+      });
+
+      membersBody.appendChild(row);
+      membersBody.appendChild(browserRow);
+
     }
   }
 
@@ -425,10 +354,6 @@
     }
   });
   el('instance-refresh-btn').addEventListener('click', loadInstance);
-
-  // Always attempt an initial load: when opened via Home Assistant Ingress, the server trusts
-  // the request without a token; otherwise this silently falls back to the login prompt.
-  loadUsers();
 })();
 </script>
 </body>

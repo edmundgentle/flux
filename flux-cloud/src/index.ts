@@ -423,6 +423,13 @@ wss.on('connection', async (socket, request) => {
       sendEnvelope(socket, { type: 'hello', instanceId, ts: Date.now() });
     }
 
+    // The HA bridge now sends WebSocket-protocol ping frames as an additional keepalive
+    // (on top of the JSON "ping"/"pong" envelopes below); 'ws' auto-replies with pong,
+    // but count the incoming ping itself as activity too so NAT/proxy hops stay warm.
+    socket.on('ping', () => {
+      if (isTunnel) registry.touch(instanceId, socket);
+    });
+
     socket.on('message', (raw) => {
       try {
         if (isTunnel) registry.touch(instanceId, socket);

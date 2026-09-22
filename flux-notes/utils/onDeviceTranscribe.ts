@@ -1,11 +1,21 @@
-import VoiceToText, { VoiceToTextEvents } from '@appcitor/react-native-voice-to-text';
+import Constants from 'expo-constants';
 
 export type SpeechSession = {
   result: Promise<string>;
   stop: () => Promise<string>;
 };
 
+function isExpoGo(): boolean {
+  return Constants.appOwnership === 'expo'
+    || String(Constants.executionEnvironment).toLowerCase() === 'storeclient';
+}
+
 export async function startSpeechSession(): Promise<SpeechSession> {
+  if (isExpoGo()) {
+    return { result: Promise.resolve(''), stop: async () => '' };
+  }
+
+  const { default: VoiceToText, VoiceToTextEvents } = await import('@appcitor/react-native-voice-to-text');
   const available = await VoiceToText.isRecognitionAvailable();
   if (!available) throw new Error('Speech recognition is unavailable on this device');
 
@@ -27,5 +37,7 @@ export async function startSpeechSession(): Promise<SpeechSession> {
 }
 
 export async function destroySpeechSession(): Promise<void> {
+  if (isExpoGo()) return;
+  const { default: VoiceToText } = await import('@appcitor/react-native-voice-to-text');
   await VoiceToText.destroy();
 }

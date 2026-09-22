@@ -1,78 +1,262 @@
-import { FLUX_CLOUD_URL } from '@flux-sdk/core';
-
-export type OEmbedData = {
+export type LinkMetadata = {
   url: string;
+  type?: 'video' | 'photo' | 'rich' | 'link';
   title?: string;
-  providerName?: string;
-  authorName?: string;
-  thumbnailUrl?: string;
-  html?: string;
+  description?: string;
+  image?: string;
+  videoUrl?: string;
+  provider?: string;
+  width?: number;
+  height?: number;
 };
 
-const URL_PATTERN = /https?:\/\/[^\s)]+/i;
+const metadataCache = new Map<string, LinkMetadata>();
 
-export function extractFirstUrl(text: string): string | null {
-  const match = text.match(URL_PATTERN);
-  return match ? match[0].replace(/[.,;)]+$/, '') : null;
-}
-
-// Providers whose oEmbed endpoints are public and CORS-friendly enough to call
-// directly from the device. React Native has no browser CORS restriction, so
-// this works out of the box on iOS/Android; only the web build needs the proxy.
-const DIRECT_PROVIDERS: Array<{ test: RegExp; endpoint: (url: string) => string }> = [
-  { test: /(^|\.)youtube\.com|youtu\.be/i, endpoint: (u) => `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(u)}` },
-  { test: /vimeo\.com/i, endpoint: (u) => `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(u)}` },
-  { test: /soundcloud\.com/i, endpoint: (u) => `https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(u)}` },
-  { test: /open\.spotify\.com/i, endpoint: (u) => `https://open.spotify.com/oembed?url=${encodeURIComponent(u)}` },
-  { test: /codepen\.io/i, endpoint: (u) => `https://codepen.io/api/oembed?format=json&url=${encodeURIComponent(u)}` },
-  { test: /flickr\.com/i, endpoint: (u) => `https://www.flickr.com/services/oembed?format=json&url=${encodeURIComponent(u)}` },
-];
-
-const cache = new Map<string, Promise<OEmbedData | null>>();
-
-async function tryFetchJson(endpoint: string): Promise<OEmbedData | null> {
-  const response = await fetch(endpoint);
-  if (!response.ok) return null;
-  const json = await response.json();
-  return normalize(json);
-}
-
-function normalize(json: Record<string, unknown>): OEmbedData | null {
-  if (!json || typeof json !== 'object') return null;
-  return {
-    url: String(json.url || ''),
-    title: typeof json.title === 'string' ? json.title : undefined,
-    providerName: typeof json.provider_name === 'string' ? json.provider_name : undefined,
-    authorName: typeof json.author_name === 'string' ? json.author_name : undefined,
-    thumbnailUrl: typeof json.thumbnail_url === 'string' ? json.thumbnail_url : undefined,
-    html: typeof json.html === 'string' ? json.html : undefined,
-  };
-}
-
-export function fetchOEmbed(url: string): Promise<OEmbedData | null> {
-  const cached = cache.get(url);
-  if (cached) return cached;
-
-  const promise = (async () => {
-    const provider = DIRECT_PROVIDERS.find((p) => p.test.test(url));
-    if (provider) {
+function decodeHtmlEntities(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, dec) => {
       try {
-        const data = await tryFetchJson(provider.endpoint(url));
-        if (data) return { ...data, url };
+        return String.fromCharCode(parseInt(dec, 10));
       } catch {
-        // fall through to the cloud proxy below
+        return _;
+      }
+    })
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+      try {
+        return String.fromCharCode(parseInt(hex, 16));
+      } catch {
+        return _;
+      }
+    })
+    .trim();
+}
+
+function resolveUrl(relativeOrAbsolute: string, baseUrl: string): string {
+  const trimmed = relativeOrAbsolute.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('//')) {
+    const protocol = baseUrl.startsWith('http://') ? 'http:' : 'https:';
+    return `${protocol}${trimmed}`;
+  }
+  try {
+    const match = baseUrl.match(/^(https?:\/\/[^/]+)/i);
+    const origin = match ? match[1] : baseUrl;
+    if (trimmed.startsWith('/')) {
+      return `${origin}${trimmed}`;
+    }
+    const path = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+    return `${path}${trimmed}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+function getAttribute(tag: string, attributeName: string): string | null {
+  // Matches attr="value", attr='value', or attr=value
+  const regex = new RegExp(`\\b${attributeName}\\s*=\\s*(?:["']([^"']*)["']|([^\\s>]+))`, 'i');
+  const match = tag.match(regex);
+  if (match) {
+    return decodeHtmlEntities(match[1] ?? match[2] ?? '');
+  }
+  return null;
+}
+
+function extractMetaTags(html: string): Record<string, string> {
+  const metaMap: Record<string, string> = {};
+  const metaRegex = /<meta\s+[^>]*>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = metaRegex.exec(html)) !== null) {
+    const tag = match[0];
+    const property = getAttribute(tag, 'property') || getAttribute(tag, 'name') || getAttribute(tag, 'itemprop');
+    const content = getAttribute(tag, 'content');
+
+    if (property && content) {
+      metaMap[property.toLowerCase()] = content;
+    }
+  }
+
+  return metaMap;
+}
+
+function extractOEmbedLink(html: string, baseUrl: string): string | null {
+  const linkRegex = /<link\s+[^>]*>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = linkRegex.exec(html)) !== null) {
+    const tag = match[0];
+    const rel = getAttribute(tag, 'rel')?.toLowerCase() || '';
+    const type = getAttribute(tag, 'type')?.toLowerCase() || '';
+    const href = getAttribute(tag, 'href');
+
+    if (rel.includes('alternate') && (type === 'application/json+oembed' || type === 'text/json+oembed') && href) {
+      return resolveUrl(href, baseUrl);
+    }
+  }
+
+  return null;
+}
+
+function extractHtmlTitle(html: string): string | null {
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (match && match[1]) {
+    return decodeHtmlEntities(match[1].replace(/<[^>]+>/g, ''));
+  }
+  return null;
+}
+
+export function hostnameOf(url: string): string {
+  const match = url.match(/^https?:\/\/([^/]+)/i);
+  return match ? match[1].replace(/^www\./i, '') : url;
+}
+
+export async function fetchLinkMetadata(url: string): Promise<LinkMetadata> {
+  if (metadataCache.has(url)) {
+    return metadataCache.get(url)!;
+  }
+
+  const fallbackResult: LinkMetadata = {
+    url,
+    title: hostnameOf(url),
+    provider: hostnameOf(url),
+  };
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      metadataCache.set(url, fallbackResult);
+      return fallbackResult;
+    }
+
+    const html = await response.text();
+
+    // 1. Tier 1: Look for oEmbed link on the page
+    const oembedUrl = extractOEmbedLink(html, url);
+    if (oembedUrl) {
+      try {
+        const oembedController = new AbortController();
+        const oembedTimer = setTimeout(() => oembedController.abort(), 5000);
+
+        const oembedRes = await fetch(oembedUrl, {
+          signal: oembedController.signal,
+          headers: { Accept: 'application/json' },
+        });
+        clearTimeout(oembedTimer);
+
+        if (oembedRes.ok) {
+          const oembedData = await oembedRes.json();
+          if (oembedData && (oembedData.title || oembedData.thumbnail_url || oembedData.url || oembedData.html)) {
+            const oembedType = oembedData.type; // 'photo' | 'video' | 'link' | 'rich'
+            let photoUrl: string | undefined;
+            if (oembedType === 'photo' && oembedData.url) {
+              photoUrl = oembedData.url;
+            } else {
+              photoUrl = oembedData.thumbnail_url || undefined;
+            }
+
+            // Extract direct video URL if available or video stream in url/html
+            let videoSrc: string | undefined;
+            if (oembedType === 'video') {
+              if (oembedData.html) {
+                const srcMatch = oembedData.html.match(/src=["']([^"']+)["']/i);
+                if (srcMatch) {
+                  videoSrc = resolveUrl(srcMatch[1], url);
+                }
+              }
+              if (!videoSrc && oembedData.url && /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(oembedData.url)) {
+                videoSrc = oembedData.url;
+              }
+            }
+
+            const result: LinkMetadata = {
+              url,
+              type: oembedType,
+              title: oembedData.title || undefined,
+              description: oembedData.description || undefined,
+              image: photoUrl,
+              videoUrl: videoSrc,
+              provider: oembedData.provider_name || oembedData.author_name || hostnameOf(url),
+              width: typeof oembedData.width === 'number' ? oembedData.width : undefined,
+              height: typeof oembedData.height === 'number' ? oembedData.height : undefined,
+            };
+            metadataCache.set(url, result);
+            return result;
+          }
+        }
+      } catch {
+        // Continue to fallback if oEmbed endpoint fetch fails
       }
     }
 
-    try {
-      const data = await tryFetchJson(`${FLUX_CLOUD_URL}/api/oembed?url=${encodeURIComponent(url)}`);
-      if (data) return { ...data, url };
-    } catch {
-      // no embed available; render as a plain link
-    }
-    return null;
-  })();
+    // 2. Tier 2: OpenGraph / Twitter Cards
+    const meta = extractMetaTags(html);
 
-  cache.set(url, promise);
-  return promise;
+    const ogType = meta['og:type'];
+    const ogTitle = meta['og:title'] || meta['twitter:title'];
+    const ogDescription = meta['og:description'] || meta['twitter:description'] || meta['description'];
+    const rawImage =
+      meta['og:image'] ||
+      meta['og:image:url'] ||
+      meta['og:image:secure_url'] ||
+      meta['twitter:image'] ||
+      meta['twitter:image:src'];
+    const ogImage = rawImage ? resolveUrl(rawImage, url) : undefined;
+    const rawVideo = meta['og:video'] || meta['og:video:url'] || meta['og:video:secure_url'];
+    const ogVideo = rawVideo ? resolveUrl(rawVideo, url) : undefined;
+    const ogProvider = meta['og:site_name'] || meta['twitter:site'] || hostnameOf(url);
+
+    if (ogTitle || ogImage || ogDescription || ogVideo) {
+      const isVideo = ogType?.includes('video') || Boolean(ogVideo);
+      const isPhoto = ogType?.includes('image') || (Boolean(ogImage) && !ogDescription && !ogTitle);
+      const result: LinkMetadata = {
+        url,
+        type: isVideo ? 'video' : isPhoto ? 'photo' : 'link',
+        title: ogTitle || extractHtmlTitle(html) || hostnameOf(url),
+        description: ogDescription,
+        image: ogImage,
+        videoUrl: ogVideo,
+        provider: ogProvider,
+      };
+      metadataCache.set(url, result);
+      return result;
+    }
+
+    // 3. Tier 3: HTML Title and standard description
+    const htmlTitle = extractHtmlTitle(html);
+    const htmlDesc = meta['description'];
+
+    const result: LinkMetadata = {
+      url,
+      title: htmlTitle || hostnameOf(url),
+      description: htmlDesc,
+      provider: hostnameOf(url),
+    };
+
+    metadataCache.set(url, result);
+    return result;
+  } catch (error) {
+    metadataCache.set(url, fallbackResult);
+    return fallbackResult;
+  }
 }
