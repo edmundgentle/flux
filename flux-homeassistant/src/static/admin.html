@@ -111,11 +111,11 @@
 
     <div id="instance-storage-info"></div>
     <div class="toolbar" style="margin-top:16px;">
-      <strong>Members</strong>
+      <strong>Users</strong>
     </div>
     <table>
       <thead>
-        <tr><th>Email</th><th>Status</th><th>Invited</th></tr>
+        <tr><th>Email</th><th>Status</th><th>Invited</th><th>Storage Used</th><th></th></tr>
       </thead>
       <tbody id="members-body"></tbody>
     </table>
@@ -263,7 +263,7 @@
         '<td>' + escapeHtml(member.email) + '</td>' +
         '<td>' + (member.joined ? 'Joined' : 'Invited (pending)') + '</td>' +
         '<td>' + escapeHtml(formatDate(member.invitedAt)) + '</td>'+
-        '<td>' + escapeHtml(formatSize(member.storageBytes || 0)) + '</td>'+
+        '<td>' + escapeHtml(formatSize(member.storage_bytes || 0)) + '</td>'+
         '<td><button class="secondary browse-btn">Browse Files</button></td>';
       membersBody.appendChild(row);
 

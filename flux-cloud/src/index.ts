@@ -192,25 +192,6 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-const OEMBED_ENDPOINTS: Array<{ test: RegExp; endpoint: (url: string) => string }> = [
-  { test: /(^|\.)youtube\.com|youtu\.be/i, endpoint: (u) => `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(u)}` },
-  { test: /vimeo\.com/i, endpoint: (u) => `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(u)}` },
-  { test: /soundcloud\.com/i, endpoint: (u) => `https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(u)}` },
-  { test: /open\.spotify\.com/i, endpoint: (u) => `https://open.spotify.com/oembed?url=${encodeURIComponent(u)}` },
-  { test: /codepen\.io/i, endpoint: (u) => `https://codepen.io/api/oembed?format=json&url=${encodeURIComponent(u)}` },
-  { test: /flickr\.com/i, endpoint: (u) => `https://www.flickr.com/services/oembed?format=json&url=${encodeURIComponent(u)}` },
-  { test: /twitter\.com|x\.com/i, endpoint: (u) => `https://publish.twitter.com/oembed?url=${encodeURIComponent(u)}` },
-];
-
-async function resolveOEmbed(url: string): Promise<unknown | null> {
-  const provider = OEMBED_ENDPOINTS.find((p) => p.test.test(url));
-  const endpoint = provider ? provider.endpoint(url) : null;
-  if (!endpoint) return null;
-  const response = await fetch(endpoint);
-  if (!response.ok) return null;
-  return response.json();
-}
-
 app.post('/api/instances/provision', provisionRateLimit, async (req, res) => {
   const { label } = req.body ?? {};
   try {
@@ -354,27 +335,6 @@ app.get('/api/shares', requireAccessToken, proxyToInstance);
 app.post('/api/shares/share', requireAccessToken, proxyToInstance);
 app.post('/api/shares/unshare', requireAccessToken, proxyToInstance);
 app.get('/api/shares/list', requireAccessToken, proxyToInstance);
-
-// Public oEmbed proxy: used as a fallback when a client can't reach a provider's
-// oEmbed endpoint directly (e.g. web builds blocked by CORS).
-app.get('/api/oembed', authRateLimit, async (req, res) => {
-  const url = typeof req.query.url === 'string' ? req.query.url : undefined;
-  if (!url || !/^https?:\/\//i.test(url)) {
-    res.status(400).json({ success: false, message: 'A valid url query parameter is required' });
-    return;
-  }
-  try {
-    const data = await resolveOEmbed(url);
-    if (!data) {
-      res.status(404).json({ success: false, message: 'No oEmbed data available for this url' });
-      return;
-    }
-    res.json(data);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to resolve oEmbed data';
-    res.status(502).json({ success: false, message });
-  }
-});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: config.wsPath });

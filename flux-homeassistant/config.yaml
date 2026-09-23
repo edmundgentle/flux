@@ -1,7 +1,7 @@
 name: Flux
-version: "1.0.26"
+version: "1.0.27"
 slug: flux
-description: Local personal search, file management, and vision analysis server.
+description: Flux manages your digital life - all stored locally.
 arch:
   - amd64
   - aarch64
