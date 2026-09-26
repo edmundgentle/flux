@@ -200,6 +200,26 @@ test('download preserves a raw JSON file served by the local instance', async ()
   assert.deepEqual(JSON.parse(await file.text()), contact);
 });
 
+test('listFiles surfaces the server error message when the relay rejects the listing', async () => {
+  const client = new FluxClient({
+    relayUrl: 'https://relay.test',
+    instanceId: 'instance-a',
+    accessToken: 'access-token',
+    relaySession: 'relay-session',
+    autoConnect: false,
+  });
+
+  client.sendRelayRequest = async () => ({
+    status: 400,
+    body: { success: false, message: 'No such directory: /Missing' },
+  });
+
+  await assert.rejects(
+    () => client.listFiles('/Missing'),
+    /No such directory: \/Missing/i,
+  );
+});
+
 test('connect rejects an unconfigured relay URL and instance', async () => {
   const client = new FluxClient({
     relayUrl: '',

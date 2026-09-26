@@ -686,9 +686,16 @@ export class FluxClient {
             return payload.data;
         }, async () => {
             const payload = await this.sendRelayRequest({ method: 'GET', path: '/api/files/list', query, headers: { Authorization: `Bearer ${this.accessToken() || ''}` } });
-            if (!payload || payload.status >= 400 || !payload.data)
-                throw new Error('List failed');
-            return payload.data;
+            const body = payload?.body ?? payload?.data;
+            if (!payload || payload.status >= 400 || !body || (typeof body === 'object' && 'success' in body && body.success === false)) {
+                const message = typeof body === 'object' && body && 'message' in body && typeof body.message === 'string'
+                    ? body.message
+                    : payload?.body && typeof payload.body === 'object' && 'message' in payload.body && typeof payload.body.message === 'string'
+                        ? payload.body.message
+                        : `List failed (${payload?.status ?? 'unknown'})`;
+                throw new Error(message);
+            }
+            return body;
         });
     }
     async deleteFile(path) {

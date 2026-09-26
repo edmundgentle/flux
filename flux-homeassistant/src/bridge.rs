@@ -314,9 +314,8 @@ impl WebSocketBridge {
         let header_user = request
             .headers
             .as_ref()
-            .and_then(|headers| headers.get("authorization"))
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .and_then(|token| account_manager.authenticate_token(token));
+            .and_then(extract_bearer_token)
+            .and_then(|token| account_manager.authenticate_token(&token));
 
         // The cloud verifies passwords and asserts the authenticated user over the signed tunnel.
         // That assertion is only ever enough to mint a session; it cannot authorize data access.
@@ -644,6 +643,22 @@ impl WebSocketBridge {
     }
 }
 
+fn extract_bearer_token(headers: &HashMap<String, String>) -> Option<String> {
+    headers.iter().find_map(|(name, value)| {
+        if name.eq_ignore_ascii_case("authorization") {
+            let value = value.trim();
+            let token = value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "))
+                .or_else(|| value.strip_prefix("BEARER "))
+                .unwrap_or(value);
+            if token.is_empty() { None } else { Some(token.to_string()) }
+        } else {
+            None
+        }
+    })
+}
+
 fn verify_relay_user(
     token: &str,
     instance_id: &str,
@@ -722,5 +737,22 @@ mod tests {
             "mallory@example.com",
             &signature
         ));
+    }
+
+    #[test]
+    fn bearer_token_lookup_accepts_standard_authorization_header_case() {
+        let headers = HashMap::from([(
+            "Authorization".to_string(),
+            "Bearer real-token".to_string(),
+        )]);
+
+        assert_eq!(extract_bearer_token(&headers), Some("real-token".to_string()));
+        assert_eq!(
+            extract_bearer_token(&HashMap::from([(
+                "authorization".to_string(),
+                "Bearer lower-case".to_string(),
+            )])),
+            Some("lower-case".to_string())
+        );
     }
 }
