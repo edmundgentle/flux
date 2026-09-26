@@ -425,6 +425,9 @@ export class FluxClient {
         this.setState('connected');
         return;
       }
+      if (this.relayUrl.trim() && this.config.instanceId?.trim() && !this.config.relaySession?.trim()) {
+        throw new Error('Cloud relay session is missing. The login response did not include relay credentials.');
+      }
       throw new Error('Relay URL and instance ID are required before connecting');
     }
     if (this.socket?.readyState === 1) return;

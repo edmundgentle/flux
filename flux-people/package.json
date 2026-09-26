@@ -29,7 +29,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "export:web": "expo export --platform web --output-dir web-build",
-    "postinstall": "npm --prefix ../flux-sdk run build",
+    "postinstall": "npm --prefix ../flux-sdk install --ignore-scripts --no-audit --no-fund && npm --prefix ../flux-sdk run build",
     "check": "tsc --noEmit -p tsconfig.json"
   },
   "private": true

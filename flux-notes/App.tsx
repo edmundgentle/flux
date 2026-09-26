@@ -41,7 +41,12 @@ function AppContent() {
     let cancelled = false;
     void client.ready.then(() => {
       if (cancelled) return;
-      setLoggedIn(client.isLoggedIn());
+      const session = client.getAuthSession();
+      setLoggedIn(Boolean(
+        client.isLoggedIn()
+        && session?.instanceId.trim()
+        && session.relaySession?.trim()
+      ));
       setRestoring(false);
     });
     return () => {

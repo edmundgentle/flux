@@ -210,3 +210,14 @@ test('connect rejects an unconfigured relay URL and instance', async () => {
 
   await assert.rejects(() => client.connect(), /Relay URL and instance ID are required/i);
 });
+
+test('connect identifies a missing relay session when the instance is configured', async () => {
+  const client = new FluxClient({
+    relayUrl: 'https://relay.test',
+    instanceId: 'instance-a',
+    autoConnect: false,
+    fetchImpl: async () => createJsonResponse({ ok: true }),
+  });
+
+  await assert.rejects(() => client.connect(), /Cloud relay session is missing/i);
+});
