@@ -31,19 +31,17 @@ impl ShareRegistry {
 
         if registry_path.exists() {
             match fs::read_to_string(&registry_path) {
-                Ok(content) => {
-                    match serde_json::from_str::<Vec<Share>>(&content) {
-                        Ok(list) => {
-                            info!("Loaded {} shares from registry", list.len());
-                            for share in list {
-                                shares_map.insert(share.file_path.clone(), share);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse shares.json: {}. Using empty registry.", e);
+                Ok(content) => match serde_json::from_str::<Vec<Share>>(&content) {
+                    Ok(list) => {
+                        info!("Loaded {} shares from registry", list.len());
+                        for share in list {
+                            shares_map.insert(share.file_path.clone(), share);
                         }
                     }
-                }
+                    Err(e) => {
+                        warn!("Failed to parse shares.json: {}. Using empty registry.", e);
+                    }
+                },
                 Err(e) => {
                     warn!("Failed to read shares.json: {}. Using empty registry.", e);
                 }
@@ -79,7 +77,12 @@ impl ShareRegistry {
     ///
     /// This replaces the previous share list for the file so callers can reliably
     /// update access from one set of users to another.
-    pub fn add_share(&self, owner: &str, file_path: &str, shared_with: Vec<String>) -> Result<(), String> {
+    pub fn add_share(
+        &self,
+        owner: &str,
+        file_path: &str,
+        shared_with: Vec<String>,
+    ) -> Result<(), String> {
         let path_str = Path::new(file_path).to_string_lossy().to_string();
         let normalized_owner = Self::normalize_username(owner);
 
@@ -106,7 +109,9 @@ impl ShareRegistry {
 
             if let Some(existing) = shares_guard.get_mut(&path_str) {
                 if Self::normalize_username(&existing.owner) != normalized_owner {
-                    return Err("Only the owner of a file can manage its sharing permissions".to_string());
+                    return Err(
+                        "Only the owner of a file can manage its sharing permissions".to_string(),
+                    );
                 }
                 existing.shared_with = final_shared_with;
             } else {
@@ -127,7 +132,12 @@ impl ShareRegistry {
     }
 
     /// Revokes file sharing access from a user (or all if user_to_remove is "*")
-    pub fn remove_share(&self, owner: &str, file_path: &str, user_to_remove: &str) -> Result<(), String> {
+    pub fn remove_share(
+        &self,
+        owner: &str,
+        file_path: &str,
+        user_to_remove: &str,
+    ) -> Result<(), String> {
         let path_str = Path::new(file_path).to_string_lossy().to_string();
         let normalized_owner = Self::normalize_username(owner);
         let normalized_user_to_remove = Self::normalize_username(user_to_remove);
@@ -137,7 +147,9 @@ impl ShareRegistry {
             let mut shares_guard = self.shares.write().unwrap();
             if let Some(share) = shares_guard.get_mut(&path_str) {
                 if Self::normalize_username(&share.owner) != normalized_owner {
-                    return Err("Only the owner of a file can manage its sharing permissions".to_string());
+                    return Err(
+                        "Only the owner of a file can manage its sharing permissions".to_string(),
+                    );
                 }
 
                 if normalized_user_to_remove == "*" {
@@ -145,7 +157,9 @@ impl ShareRegistry {
                     remove_completely = true;
                 } else {
                     // Retain others
-                    share.shared_with.retain(|u| Self::normalize_username(u) != normalized_user_to_remove);
+                    share
+                        .shared_with
+                        .retain(|u| Self::normalize_username(u) != normalized_user_to_remove);
                     if share.shared_with.is_empty() {
                         remove_completely = true;
                     }
@@ -160,7 +174,18 @@ impl ShareRegistry {
         }
 
         self.save()?;
-        info!("Revoked sharing access from '{}' for {}", user_to_remove, file_path);
+        info!(
+            "Revoked sharing access from '{}' for {}",
+            user_to_remove, file_path
+        );
+        Ok(())
+    }
+
+    pub fn remove_deleted_file(&self, file_path: &str) -> Result<(), String> {
+        let removed = self.shares.write().unwrap().remove(file_path).is_some();
+        if removed {
+            self.save()?;
+        }
         Ok(())
     }
 
@@ -174,10 +199,18 @@ impl ShareRegistry {
             if Self::normalize_username(&share.owner) == normalized_user {
                 return true;
             }
-            if share.shared_with.iter().any(|entry| Self::normalize_username(entry) == "*") {
+            if share
+                .shared_with
+                .iter()
+                .any(|entry| Self::normalize_username(entry) == "*")
+            {
                 return true;
             }
-            if share.shared_with.iter().any(|entry| Self::normalize_username(entry) == normalized_user) {
+            if share
+                .shared_with
+                .iter()
+                .any(|entry| Self::normalize_username(entry) == normalized_user)
+            {
                 return true;
             }
             false
@@ -185,7 +218,9 @@ impl ShareRegistry {
             // Use path components rather than substring matching, and resolve symlinks
             // before granting access to a private workspace.
             let path = Path::new(file_path);
-            let Ok(canonical_path) = fs::canonicalize(path) else { return false; };
+            let Ok(canonical_path) = fs::canonicalize(path) else {
+                return false;
+            };
             let user_roots = [
                 self.data_dir.join(&normalized_user),
                 self.data_dir.join("users").join(&normalized_user),
@@ -206,7 +241,9 @@ impl ShareRegistry {
             return Self::normalize_username(&share.owner) == normalized_user;
         }
 
-        let Ok(canonical_path) = fs::canonicalize(file_path) else { return false; };
+        let Ok(canonical_path) = fs::canonicalize(file_path) else {
+            return false;
+        };
         [
             Path::new(data_dir).join(&normalized_user),
             Path::new(data_dir).join("users").join(&normalized_user),
@@ -221,7 +258,11 @@ impl ShareRegistry {
         let path_str = Path::new(file_path).to_string_lossy().to_string();
         let shares_guard = self.shares.read().unwrap();
         if let Some(share) = shares_guard.get(&path_str) {
-            share.shared_with.iter().map(|user| Self::normalize_username(user)).collect()
+            share
+                .shared_with
+                .iter()
+                .map(|user| Self::normalize_username(user))
+                .collect()
         } else {
             Vec::new()
         }
@@ -245,8 +286,12 @@ impl ShareRegistry {
         shares_guard
             .values()
             .filter(|s| {
-                s.shared_with.iter().any(|entry| Self::normalize_username(entry) == normalized_user)
-                    || s.shared_with.iter().any(|entry| Self::normalize_username(entry) == "*")
+                s.shared_with
+                    .iter()
+                    .any(|entry| Self::normalize_username(entry) == normalized_user)
+                    || s.shared_with
+                        .iter()
+                        .any(|entry| Self::normalize_username(entry) == "*")
             })
             .cloned()
             .collect()
@@ -275,7 +320,9 @@ mod tests {
         assert!(!registry.check_access("alice", "/tmp/alice/secret.jpg"));
 
         // Share with Bob
-        registry.add_share("alice", file, vec!["bob".to_string()]).unwrap();
+        registry
+            .add_share("alice", file, vec!["bob".to_string()])
+            .unwrap();
         assert!(registry.check_access("bob", file));
         assert!(!registry.check_access("charlie", file));
 
@@ -296,7 +343,9 @@ mod tests {
         fs::write(&file_path, b"photo").unwrap();
         let file = file_path.to_str().unwrap();
 
-        registry.add_share("Alice", file, vec!["Bob".to_string()]).unwrap();
+        registry
+            .add_share("Alice", file, vec!["Bob".to_string()])
+            .unwrap();
 
         assert!(registry.check_access("bob", file));
         assert!(!registry.check_access("charlie", file));

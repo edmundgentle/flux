@@ -20,7 +20,9 @@ export function ensureTextBlockBetweenAttachments(blocks: NoteBlock[]): NoteBloc
 }
 
 export function parseBlocksFromMarkdown(rawBody: string, fallbackAttachments?: NoteAttachment[]): NoteBlock[] {
-  const trimmed = (rawBody || '').trim();
+  const trimmed = (rawBody || '')
+    .replace(/<!--\s*block:(?:text|attachment)\b[\s\S]*?-->/gi, '')
+    .trim();
   if (!trimmed) {
     if (fallbackAttachments && fallbackAttachments.length > 0) {
       return ensureTextBlockBetweenAttachments(fallbackAttachments.map((a) => attachmentToBlock(a)));
@@ -29,73 +31,6 @@ export function parseBlocksFromMarkdown(rawBody: string, fallbackAttachments?: N
   }
 
   const blocks: NoteBlock[] = [];
-  const blockRegex = /([\s\S]*?)(?:\n|$)/g;
-
-  let match: RegExpExecArray | null;
-  let hasBlockComments = false;
-
-  while ((match = blockRegex.exec(trimmed)) !== null) {
-    hasBlockComments = true;
-    const kind = match[1];
-    let meta: any = {};
-    try {
-      meta = JSON.parse(match[2]);
-    } catch {
-      meta = {};
-    }
-    const body = (match[3] || '').trim();
-    const id = meta.id || `block_${Date.now()}_${blocks.length}`;
-
-    if (kind === 'text') {
-      const isChecklist = Boolean(meta.isChecklist);
-      let text = body;
-      let checklistItems: ChecklistItem[] = [];
-
-      if (isChecklist) {
-        checklistItems = parseChecklistItems(body);
-        text = checklistItems.map((item) => item.text).join('\n');
-      } else {
-        // Strip markdown heading marker if text already includes it
-        if (meta.variant === 'h1' && text.startsWith('# ')) {
-          text = text.slice(2);
-        } else if (meta.variant === 'h2' && text.startsWith('## ')) {
-          text = text.slice(3);
-        }
-      }
-
-      blocks.push({
-        id,
-        type: 'text',
-        text,
-        variant: meta.variant || 'paragraph',
-        bold: Boolean(meta.bold),
-        italic: Boolean(meta.italic),
-        underline: Boolean(meta.underline),
-        strikethrough: Boolean(meta.strikethrough),
-        isChecklist,
-        checklistItems: isChecklist ? checklistItems : undefined,
-      });
-    } else if (kind === 'attachment') {
-      blocks.push({
-        id,
-        type: 'attachment',
-        attachmentType: meta.attachmentType || 'file',
-        name: meta.name || 'Attachment',
-        uri: meta.uri || '',
-        mimeType: meta.mimeType,
-        waveform: meta.waveform,
-        durationMs: meta.durationMs,
-        transcript: meta.transcript,
-        transcriptStatus: meta.transcriptStatus,
-      });
-    }
-  }
-
-  if (hasBlockComments && blocks.length > 0) {
-    return ensureTextBlockBetweenAttachments(blocks);
-  }
-
-  // Fallback: parse plain markdown into blocks
   const lines = trimmed.split('\n');
   let i = 0;
   while (i < lines.length) {
@@ -133,13 +68,18 @@ export function parseBlocksFromMarkdown(rawBody: string, fallbackAttachments?: N
     // Check for image attachment: ![caption](uri)
     const imgMatch = line.match(/^!\[([^\]]*)\]\((.+)\)$/);
     if (imgMatch) {
+      const savedAttachment = fallbackAttachments?.find((attachment) => attachment.uri === imgMatch[2]);
       blocks.push({
-        id: `block_${Date.now()}_${blocks.length}`,
+        id: savedAttachment?.id || `block_${Date.now()}_${blocks.length}`,
         type: 'attachment',
         attachmentType: 'image',
         name: imgMatch[1] || 'Image',
         uri: imgMatch[2],
-        mimeType: 'image/jpeg',
+        mimeType: savedAttachment?.mimeType || 'image/jpeg',
+        waveform: savedAttachment?.waveform,
+        durationMs: savedAttachment?.durationMs,
+        transcript: savedAttachment?.transcript,
+        transcriptStatus: savedAttachment?.transcriptStatus,
       });
       i++;
       continue;
@@ -147,12 +87,20 @@ export function parseBlocksFromMarkdown(rawBody: string, fallbackAttachments?: N
 
     // Check for bare web link
     if (/^https?:\/\/\S+$/.test(line.trim())) {
+      const uri = line.trim();
+      const savedAttachment = fallbackAttachments?.find((attachment) => attachment.uri === uri);
+      const kind = inferAttachmentKind(uri, uri);
       blocks.push({
-        id: `block_${Date.now()}_${blocks.length}`,
+        id: savedAttachment?.id || `block_${Date.now()}_${blocks.length}`,
         type: 'attachment',
-        attachmentType: 'link',
-        name: line.trim(),
-        uri: line.trim(),
+        attachmentType: kind,
+        name: uri,
+        uri,
+        mimeType: savedAttachment?.mimeType,
+        waveform: savedAttachment?.waveform,
+        durationMs: savedAttachment?.durationMs,
+        transcript: savedAttachment?.transcript,
+        transcriptStatus: savedAttachment?.transcriptStatus,
       });
       i++;
       continue;
@@ -164,36 +112,41 @@ export function parseBlocksFromMarkdown(rawBody: string, fallbackAttachments?: N
       const name = linkMatch[1];
       const uri = linkMatch[2];
       const kind = inferAttachmentKind(name, uri);
+      const savedAttachment = fallbackAttachments?.find((attachment) => attachment.uri === uri);
       blocks.push({
-        id: `block_${Date.now()}_${blocks.length}`,
+        id: savedAttachment?.id || `block_${Date.now()}_${blocks.length}`,
         type: 'attachment',
         attachmentType: kind,
         name,
         uri,
+        mimeType: savedAttachment?.mimeType,
+        waveform: savedAttachment?.waveform,
+        durationMs: savedAttachment?.durationMs,
+        transcript: savedAttachment?.transcript,
+        transcriptStatus: savedAttachment?.transcriptStatus,
       });
       i++;
       continue;
     }
 
-    // Heading 1
-    if (line.startsWith('# ')) {
-      blocks.push({
-        id: `block_${Date.now()}_${blocks.length}`,
-        type: 'text',
-        text: line.slice(2).trim(),
-        variant: 'h1',
-      });
-      i++;
-      continue;
-    }
-
-    // Heading 2
+    // Headings
     if (line.startsWith('## ')) {
       blocks.push({
         id: `block_${Date.now()}_${blocks.length}`,
         type: 'text',
         text: line.slice(3).trim(),
         variant: 'h2',
+      });
+      i++;
+      continue;
+    }
+
+    if (line.startsWith('# ')) {
+      blocks.push({
+        id: `block_${Date.now()}_${blocks.length}`,
+        type: 'text',
+        text: line.slice(2).trim(),
+        variant: 'h1',
       });
       i++;
       continue;
@@ -254,15 +207,6 @@ export function serializeBlocksToMarkdown(blocks: NoteBlock[]): string {
   return blocks
     .map((block) => {
       if (block.type === 'text') {
-        const meta = {
-          id: block.id,
-          variant: block.variant,
-          bold: block.bold || false,
-          italic: block.italic || false,
-          underline: block.underline || false,
-          strikethrough: block.strikethrough || false,
-          isChecklist: block.isChecklist || false,
-        };
         let body = block.text || '';
         if (block.isChecklist && block.checklistItems && block.checklistItems.length > 0) {
           body = block.checklistItems
@@ -275,17 +219,6 @@ export function serializeBlocksToMarkdown(blocks: NoteBlock[]): string {
         }
         return body;
       } else if (block.type === 'attachment') {
-        const meta = {
-          id: block.id,
-          attachmentType: block.attachmentType,
-          name: block.name,
-          uri: block.uri,
-          mimeType: block.mimeType,
-          waveform: block.waveform,
-          durationMs: block.durationMs,
-          transcript: block.transcript,
-          transcriptStatus: block.transcriptStatus,
-        };
         let body = '';
         if (block.attachmentType === 'image') {
           body = `![${block.name}](${block.uri})`;

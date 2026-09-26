@@ -13,6 +13,10 @@ pub struct ImageAnalysisResult {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub date_created: Option<i64>,
+    /// Upright (EXIF-orientation-corrected) pixel dimensions.
+    pub dimensions: Option<(u32, u32)>,
+    /// `None` when face analysis couldn't run, as opposed to finding no faces.
+    pub face_detections: Option<Vec<crate::detect::FaceDetection>>,
 }
 
 pub struct CvPipeline;
@@ -28,12 +32,21 @@ impl CvPipeline {
         let mut date_created = None;
         let mut tags = Vec::new();
         let mut faces = Vec::new();
+        let mut orientation = 1;
+        let mut dimensions = None;
+        let mut face_detections = None;
 
         // 2. Parse EXIF data
         if let Ok(file) = File::open(file_path) {
             let mut buf_reader = BufReader::new(file);
             let reader = Reader::new();
             if let Ok(exif_data) = reader.read_from_container(&mut buf_reader) {
+                if let Some(value) = exif_data
+                    .get_field(Tag::Orientation, In::PRIMARY)
+                    .and_then(|field| field.value.get_uint(0))
+                {
+                    orientation = value;
+                }
                 // Parse Lat/Lon
                 if let Some(lat_field) = exif_data.get_field(Tag::GPSLatitude, In::PRIMARY) {
                     if let Some(ref_field) = exif_data.get_field(Tag::GPSLatitudeRef, In::PRIMARY) {
@@ -45,7 +58,8 @@ impl CvPipeline {
                 }
 
                 if let Some(lon_field) = exif_data.get_field(Tag::GPSLongitude, In::PRIMARY) {
-                    if let Some(ref_field) = exif_data.get_field(Tag::GPSLongitudeRef, In::PRIMARY) {
+                    if let Some(ref_field) = exif_data.get_field(Tag::GPSLongitudeRef, In::PRIMARY)
+                    {
                         let ref_str = ref_field.value.display_as(Tag::GPSLongitudeRef).to_string();
                         if let Some(lon_val) = Self::parse_gps_coord(&lon_field.value, &ref_str) {
                             longitude = Some(lon_val);
@@ -77,8 +91,20 @@ impl CvPipeline {
         if let Some(file_name) = file_path.file_name().and_then(|n| n.to_str()) {
             let lower_name = file_name.to_lowercase();
             let keywords = vec![
-                "dog", "cat", "car", "receipt", "invoice", "document", "screenshot", 
-                "house", "garden", "outdoor", "indoor", "family", "vacation", "trip"
+                "dog",
+                "cat",
+                "car",
+                "receipt",
+                "invoice",
+                "document",
+                "screenshot",
+                "house",
+                "garden",
+                "outdoor",
+                "indoor",
+                "family",
+                "vacation",
+                "trip",
             ];
             for kw in keywords {
                 if lower_name.contains(kw) {
@@ -90,7 +116,10 @@ impl CvPipeline {
         // 4. Visual analysis using the `image` crate (Color, Brightness, similarity fingerprint)
         match image::open(file_path) {
             Ok(img) => {
+                // Face boxes must match how viewers display the photo, i.e. upright.
+                let img = Self::apply_orientation(img, orientation);
                 let (width, height) = img.dimensions();
+                dimensions = Some((width, height));
 
                 // If it looks like a long vertical document, tag it as receipt/document
                 let ratio = height as f32 / width as f32;
@@ -130,7 +159,8 @@ impl CvPipeline {
                         let (r, g, b) = (rgb[0], rgb[1], rgb[2]);
 
                         // Perceptual brightness formula
-                        let brightness = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as i64;
+                        let brightness =
+                            (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as i64;
                         total_brightness += brightness as u64;
                         samples += 1;
 
@@ -180,9 +210,13 @@ impl CvPipeline {
                     tags.push("face".to_string());
                 }
                 faces.extend(vision.face_fingerprints);
+                face_detections = vision.faces;
             }
             Err(e) => {
-                warn!("Image processing failed for {:?}, skipping visual tags: {}", file_path, e);
+                warn!(
+                    "Image processing failed for {:?}, skipping visual tags: {}",
+                    file_path, e
+                );
             }
         }
 
@@ -196,7 +230,22 @@ impl CvPipeline {
             latitude,
             longitude,
             date_created,
+            dimensions,
+            face_detections,
         })
+    }
+
+    fn apply_orientation(img: image::DynamicImage, orientation: u32) -> image::DynamicImage {
+        match orientation {
+            2 => img.fliph(),
+            3 => img.rotate180(),
+            4 => img.flipv(),
+            5 => img.rotate90().fliph(),
+            6 => img.rotate90(),
+            7 => img.rotate270().fliph(),
+            8 => img.rotate270(),
+            _ => img,
+        }
     }
 
     /// Converts EXIF Rational values into decimal coordinates
@@ -225,7 +274,9 @@ impl CvPipeline {
                 if let Ok(date_str) = std::str::from_utf8(bytes) {
                     let cleaned = date_str.trim();
                     // EXIF date format: "YYYY:MM:DD HH:MM:SS"
-                    if let Ok(naive_dt) = NaiveDateTime::parse_from_str(cleaned, "%Y:%m:%d %H:%M:%S") {
+                    if let Ok(naive_dt) =
+                        NaiveDateTime::parse_from_str(cleaned, "%Y:%m:%d %H:%M:%S")
+                    {
                         return Some(naive_dt.and_utc().timestamp());
                     }
                 }
@@ -268,4 +319,3 @@ mod tests {
         assert_eq!(ts, 1690127100);
     }
 }
-

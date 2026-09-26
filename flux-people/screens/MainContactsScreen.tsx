@@ -16,9 +16,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { ConnectionState, DiagnosticEvent, FluxClient, SearchResult, TransportMode } from '@flux-sdk/core';
 import { ContactItem } from '../types/contact';
 import {
+  generateVCard,
+  getContactFileName,
   groupContactsAlphabetically,
-  parseContactJson,
-  serializeContactJson,
+  parseContactVCard,
 } from '../utils/contactUtils';
 import {
   deleteCachedContact,
@@ -51,6 +52,22 @@ function getConnectionIcon(connectionState: ConnectionState, transport: Transpor
     return { name: 'home-outline', color: '#16a34a' };
   }
   return { name: 'cloud-outline', color: '#2563eb' };
+}
+
+function contactFilePath(contact: Partial<ContactItem> & { id: string }, previousPath?: string): string {
+  const directory = previousPath?.slice(0, previousPath.lastIndexOf('/') + 1) || 'Contacts/';
+  return `${directory}${getContactFileName(contact)}`;
+}
+
+async function uploadContact(client: FluxClient, contact: ContactItem, previousPath?: string): Promise<void> {
+  const filename = contact.path.split('/').pop() || `${contact.id}.vcf`;
+  await client.uploadFile(new TextEncoder().encode(generateVCard(contact)), {
+    directory: '/Contacts',
+    path: filename,
+  });
+  if (previousPath && previousPath !== contact.path) {
+    await client.deleteFile(previousPath);
+  }
 }
 
 export default function MainContactsScreen({ client, diagnostics, onLoggedOut }: Props) {
@@ -142,34 +159,57 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
       await client.connect();
       setIsOffline(false);
 
-      const searchResults: SearchResult[] = await client.search({
-        q: searchQuery.trim(),
-        limit: 300,
-      });
+      let loadedResults: (ContactItem | null)[];
+      let listingTruncated = false;
+      if (!searchQuery.trim()) {
+        // List the whole Contacts directory so deletions are detected, and only download
+        // contacts whose server modification time differs from the cached copy.
+        const listing = await client.listFiles('/Contacts');
+        listingTruncated = listing.truncated;
+        const contactFiles = listing.entries.filter((entry) => !entry.is_dir && /\.vcf$/i.test(entry.name));
+        const cachedByPath = new Map(cachedContacts.map((contact) => [contact.path, contact]));
+        loadedResults = await Promise.all(
+          contactFiles.map(async (entry) => {
+            const cached = cachedByPath.get(entry.path);
+            if (cached && entry.modified_at !== null && cached.serverModifiedAt === entry.modified_at) return cached;
+            try {
+              const text = await (await client.downloadFile(entry.path)).text();
+              const fallbackDate = entry.modified_at ?? Date.now();
+              const parsed = parseContactVCard(text, entry.path, fallbackDate);
+              return { ...parsed, serverModifiedAt: entry.modified_at ?? undefined };
+            } catch {
+              return null;
+            }
+          })
+        );
+      } else {
+        const searchResults: SearchResult[] = await client.search({
+          q: searchQuery.trim(),
+          limit: 300,
+        });
 
-      const contactFiles = searchResults.filter(
-        (res) => res.path.includes('/Contacts/') || res.path.endsWith('.json')
-      );
+        const contactFiles = searchResults.filter(
+          (res) => /(?:^|\/)Contacts\/[^/]+\.vcf$/i.test(res.path)
+        );
 
-      const loadedResults = await Promise.all(
-        contactFiles.map(async (fileRes) => {
-          try {
-            const blob = await client.downloadFile(fileRes.path);
-            const text = await blob.text();
-            return parseContactJson(text, fileRes.path, fileRes.date_created);
-          } catch {
-            // Search previews are capped and can be incomplete JSON. Parsing one
-            // would manufacture an "Unnamed Contact" and replace valid cached data.
-            return null;
-          }
-        })
-      );
+        loadedResults = await Promise.all(
+          contactFiles.map(async (fileRes) => {
+            try {
+              const blob = await client.downloadFile(fileRes.path);
+              const text = await blob.text();
+              return parseContactVCard(text, fileRes.path, fileRes.date_created);
+            } catch {
+              return null;
+            }
+          })
+        );
+      }
       const loaded = loadedResults.filter((contact): contact is ContactItem => contact !== null);
 
       // Only replace the cache after every contact file was downloaded. A partial
       // result must not erase a contact that was just saved locally.
       if (!searchQuery.trim()) {
-        const completeServerResult = loaded.length === contactFiles.length;
+        const completeServerResult = !listingTruncated && loadedResults.every((contact) => contact !== null);
         if (completeServerResult) {
           await saveCachedContacts(loaded);
           setCachedContacts(loaded);
@@ -259,9 +299,8 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
     contactData: Partial<ContactItem> & { firstName: string }
   ) => {
     const timestamp = Date.now();
-    const cleanId = contactData.id || `contact_${timestamp}_${Math.random().toString(36).substring(2, 6)}`;
-    const filename = `${cleanId}.json`;
-    const filePath = contactData.path || `Contacts/${filename}`;
+    const cleanId = contactData.id || `contact_${timestamp.toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
+    const filePath = contactFilePath({ ...contactData, id: cleanId }, contactData.path);
 
     const surnameVal = (contactData.surname || contactData.lastName || '').trim();
 
@@ -297,14 +336,7 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
 
     // 2. Sync with Flux server if online
     try {
-      const jsonString = serializeContactJson(fullContactItem);
-      const encoder = new TextEncoder();
-      const bytes = encoder.encode(jsonString);
-
-      await client.uploadFile(bytes, {
-        directory: '/Contacts',
-        path: filename,
-      });
+      await uploadContact(client, fullContactItem, contactData.path);
     } catch (err) {
       console.warn('Saved to local cache; server upload failed (offline mode):', err);
     }
@@ -327,6 +359,7 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
   const handleToggleFavorite = async (contact: ContactItem) => {
     const updated: ContactItem = {
       ...contact,
+      path: contactFilePath(contact, contact.path),
       favorite: !contact.favorite,
       updatedAt: Date.now(),
     };
@@ -341,15 +374,7 @@ export default function MainContactsScreen({ client, diagnostics, onLoggedOut }:
     }
 
     try {
-      const jsonString = serializeContactJson(updated);
-      const encoder = new TextEncoder();
-      const bytes = encoder.encode(jsonString);
-
-      const filename = contact.path.split('/').pop() || `${contact.id}.json`;
-      await client.uploadFile(bytes, {
-        directory: '/Contacts',
-        path: filename,
-      });
+      await uploadContact(client, updated, contact.path);
     } catch (err) {
       console.warn('Favorited locally; server update failed (offline mode):', err);
     }

@@ -74,13 +74,15 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '12mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-const requireAccessToken = async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
+// Authenticates a caller at the relay edge: proves they may route requests to this instance,
+// so the relay can attribute and rate-limit traffic. It does NOT authorize data access -
+// only the instance-issued access token in the Authorization header does that.
+const requireRelaySession = async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
   const instanceId = typeof req.query.instance_id === 'string' ? req.query.instance_id : req.header('x-instance-id');
-  const authorization = req.header('authorization');
-  const token = authorization?.replace(/^Bearer\s+/i, '');
+  const token = req.header('x-relay-session');
   const user = instanceId && token ? await userStore.getAccessTokenUser(instanceId, token) : undefined;
   if (!instanceId || !user) {
-    res.status(401).json({ success: false, message: 'Missing or invalid access token' });
+    res.status(401).json({ success: false, message: 'Missing or invalid relay session' });
     return;
   }
   res.locals.instanceId = instanceId;
@@ -101,7 +103,7 @@ const requireInstanceToken = async (req: express.Request, res: express.Response,
   next();
 };
 
-app.post('/api/auth/ws-ticket', authRateLimit, requireAccessToken, async (req, res) => {
+app.post('/api/auth/ws-ticket', authRateLimit, requireRelaySession, async (req, res) => {
   const ticket = crypto.randomBytes(32).toString('hex');
   try {
     await relay.createWsTicket(ticket, res.locals.instanceId, res.locals.user);
@@ -111,9 +113,51 @@ app.post('/api/auth/ws-ticket', authRateLimit, requireAccessToken, async (req, r
   }
 });
 
-// The relay signs the authenticated cloud user before forwarding this to the instance.
-// The local token never becomes a cloud credential and is only used for LAN requests.
-app.post('/api/auth/local-session', authRateLimit, requireAccessToken, proxyToInstance);
+/**
+ * Asks the instance to issue an access token for an already-authenticated user. The relay signs
+ * the username with the instance's tunnel token, and the instance mints the token; the relay
+ * never sees a credential that would let it read the user's data afterwards.
+ */
+async function mintInstanceSession(instanceId: string, user: string, label?: string): Promise<{ token: string; keyId?: string; expiresAt?: string }> {
+  const requestId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const payload = await relay.request(instanceId, requestId, {
+    method: 'POST',
+    path: '/api/auth/session',
+    headers: {},
+    query: {},
+    body: { display_name: label },
+    user,
+  }, user);
+  const body = (payload.body ?? payload.data) as { success?: boolean; message?: string; data?: { token?: string; key_id?: string; expires_at?: string } } | undefined;
+  const token = body?.data?.token;
+  if ((payload.status ?? 200) >= 400 || !token) {
+    throw new Error(body?.message || 'The instance refused to issue an access token');
+  }
+  return { token, keyId: body?.data?.key_id, expiresAt: body?.data?.expires_at };
+}
+
+// Mints or re-mints the instance access token for an established relay session. Used when the
+// instance was offline at login, or when the previous token expired or was revoked.
+app.post('/api/auth/session', authRateLimit, requireRelaySession, async (_req, res) => {
+  try {
+    const session = await mintInstanceSession(res.locals.instanceId, res.locals.user);
+    res.json({ success: true, data: { user: res.locals.user, ...session } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not reach the instance';
+    res.status(503).json({ success: false, message });
+  }
+});
+
+// Login must still succeed when the instance is offline (e.g. a freshly registered account whose
+// add-on has never connected); the client retries via POST /api/auth/session once it is reachable.
+async function tryMintInstanceSession(instanceId: string, user: string, label?: string): Promise<{ token?: string; keyId?: string; expiresAt?: string }> {
+  try {
+    return await mintInstanceSession(instanceId, user, label);
+  } catch (error) {
+    console.warn(`Could not mint an instance session for ${instanceId}:`, error instanceof Error ? error.message : error);
+    return {};
+  }
+}
 
 const tunnelHeartbeat = setInterval(() => {
   void relay.renewTunnels();
@@ -140,6 +184,8 @@ async function proxyToInstance(req: express.Request, res: express.Response): Pro
   const requestId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const headers: Record<string, string> = Object.fromEntries(
     Object.entries(req.headers)
+      // The relay session is a cloud-only credential; the instance must never see it.
+      .filter(([name]) => name.toLowerCase() !== 'x-relay-session')
       .flatMap(([name, value]) => {
         if (Array.isArray(value)) {
           const joined = value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0).join(',');
@@ -267,11 +313,13 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
 
   try {
     const instance = await userStore.registerUser(email, password, typeof label === 'string' ? label : undefined);
+    const user = email.trim().toLowerCase();
     res.status(201).json({
       success: true,
       data: {
-        user: email.trim().toLowerCase(),
-        token: instance.accessToken,
+        user,
+        ...(await tryMintInstanceSession(instance.instanceId, user, instance.label)),
+        relaySession: instance.accessToken,
         instanceId: instance.instanceId,
         tunnelToken: instance.tunnelToken,
         label: instance.label,
@@ -309,7 +357,8 @@ app.post('/api/auth/login', authRateLimit, async (req, res) => {
       success: true,
       data: {
         user: email.trim().toLowerCase(),
-        token: instance.accessToken,
+        ...(await tryMintInstanceSession(instance.instanceId, email.trim().toLowerCase(), instance.label)),
+        relaySession: instance.accessToken,
         instanceId: instance.instanceId,
         label: instance.label,
         instances: instances.map(({ instanceId, label }) => ({ instanceId, label })),
@@ -321,20 +370,30 @@ app.post('/api/auth/login', authRateLimit, async (req, res) => {
   }
 });
 
-app.get('/api/search', requireAccessToken, proxyToInstance);
-app.post('/api/search', requireAccessToken, proxyToInstance);
-app.get('/api/files/:path(*)', requireAccessToken, proxyToInstance);
-app.post('/api/files/:path(*)', requireAccessToken, proxyToInstance);
-app.delete('/api/files/:path(*)', requireAccessToken, proxyToInstance);
-app.put('/api/files/:path(*)', requireAccessToken, proxyToInstance);
-app.patch('/api/files/:path(*)', requireAccessToken, proxyToInstance);
-app.get('/api/config', requireAccessToken, proxyToInstance);
-app.post('/api/config', requireAccessToken, proxyToInstance);
-app.get('/api/storage', requireAccessToken, proxyToInstance);
-app.get('/api/shares', requireAccessToken, proxyToInstance);
-app.post('/api/shares/share', requireAccessToken, proxyToInstance);
-app.post('/api/shares/unshare', requireAccessToken, proxyToInstance);
-app.get('/api/shares/list', requireAccessToken, proxyToInstance);
+app.get('/api/search', requireRelaySession, proxyToInstance);
+app.post('/api/search', requireRelaySession, proxyToInstance);
+app.get('/api/files/:path(*)', requireRelaySession, proxyToInstance);
+app.post('/api/files/:path(*)', requireRelaySession, proxyToInstance);
+app.delete('/api/files/:path(*)', requireRelaySession, proxyToInstance);
+app.put('/api/files/:path(*)', requireRelaySession, proxyToInstance);
+app.patch('/api/files/:path(*)', requireRelaySession, proxyToInstance);
+app.get('/api/config', requireRelaySession, proxyToInstance);
+app.post('/api/config', requireRelaySession, proxyToInstance);
+app.get('/api/storage', requireRelaySession, proxyToInstance);
+app.get('/api/shares', requireRelaySession, proxyToInstance);
+app.post('/api/shares/share', requireRelaySession, proxyToInstance);
+app.post('/api/shares/unshare', requireRelaySession, proxyToInstance);
+app.get('/api/shares/list', requireRelaySession, proxyToInstance);
+app.get('/api/faces/:path(*)', requireRelaySession, proxyToInstance);
+app.post('/api/faces/:path(*)', requireRelaySession, proxyToInstance);
+// Revokes the instance token at the instance, then the relay session here.
+app.post('/api/auth/logout', requireRelaySession, async (req, res, next) => {
+  res.once('finish', () => {
+    void userStore.revokeSession(res.locals.instanceId, req.header('x-relay-session')!)
+      .catch((error) => console.warn('Failed to revoke relay session:', error));
+  });
+  next();
+}, proxyToInstance);
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: config.wsPath });
@@ -355,21 +414,20 @@ process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); }
 
 
 wss.on('connection', async (socket, request) => {
-  const authHeader = request.headers.authorization || request.headers['x-instance-token'];
   const url = new URL(request.url || '/', 'http://localhost');
   const instanceId = url.searchParams.get('instance_id') || request.headers['x-instance-id'] as string | undefined;
   const tunnelToken = url.searchParams.get('instance_token') || (typeof request.headers['x-instance-token'] === 'string' ? request.headers['x-instance-token'] : undefined);
-  const accessToken = typeof authHeader === 'string' ? authHeader.replace(/^Bearer\s+/i, '') : undefined;
+  const relaySession = typeof request.headers['x-relay-session'] === 'string' ? request.headers['x-relay-session'] : undefined;
   const wsTicket = url.searchParams.get('ws_ticket');
 
-  if (!instanceId || (!tunnelToken && !accessToken && !wsTicket)) {
+  if (!instanceId || (!tunnelToken && !relaySession && !wsTicket)) {
     socket.close(1008, 'Unauthorized');
     return;
   }
 
   const isTunnel = Boolean(tunnelToken && await userStore.verifyToken(instanceId, tunnelToken));
   const clientUser = (wsTicket && await relay.consumeWsTicket(instanceId, wsTicket))
-    || (accessToken ? await userStore.getAccessTokenUser(instanceId, accessToken) : undefined);
+    || (relaySession ? await userStore.getAccessTokenUser(instanceId, relaySession) : undefined);
   const isClient = Boolean(clientUser);
   if (!isTunnel && !isClient) {
     socket.close(1008, 'Invalid instance credentials');

@@ -33,8 +33,14 @@ pub struct ConfigManager {
 
 impl AppConfig {
     pub fn validate_bridge_settings(&self) -> Result<(), String> {
-        let has_instance = self.instance_id.as_ref().is_some_and(|value| !value.trim().is_empty());
-        let has_token = self.websocket_token.as_ref().is_some_and(|value| !value.trim().is_empty());
+        let has_instance = self
+            .instance_id
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let has_token = self
+            .websocket_token
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty());
 
         if !has_instance && !has_token {
             return Ok(());
@@ -82,41 +88,48 @@ async fn bootstrap_from_cloud() -> Result<(String, String), String> {
         .map_err(|e| format!("Failed to reach cloud relay at {}: {}", endpoint, e))?;
 
     let status = response.status();
-    let parsed: ProvisionResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse cloud provisioning response ({}): {}", status, e))?;
+    let parsed: ProvisionResponse = response.json().await.map_err(|e| {
+        format!(
+            "Failed to parse cloud provisioning response ({}): {}",
+            status, e
+        )
+    })?;
 
     if !status.is_success() || !parsed.success {
-        return Err(parsed.message.unwrap_or_else(|| format!("Cloud relay provisioning request failed ({})", status)));
+        return Err(parsed
+            .message
+            .unwrap_or_else(|| format!("Cloud relay provisioning request failed ({})", status)));
     }
 
-    let data = parsed.data.ok_or_else(|| "Cloud relay response was missing provisioning data".to_string())?;
+    let data = parsed
+        .data
+        .ok_or_else(|| "Cloud relay response was missing provisioning data".to_string())?;
     Ok((data.instance_id, data.tunnel_token))
 }
 
 impl ConfigManager {
     pub fn new() -> Self {
-        // In HA, options are stored in /data/options.json
-        // Let's determine where to store our merged config file.
         let ha_options_path = Path::new("/data/options.json");
-        
+        let runtime_config_path = if Path::new("/data").is_dir() {
+            PathBuf::from("/data/app_config.json")
+        } else {
+            PathBuf::from("app_config.json")
+        };
+
         let mut base_config = AppConfig::default();
 
         // 1. Try to load from HA options.json if present
         if ha_options_path.exists() {
             match fs::read_to_string(ha_options_path) {
-                Ok(content) => {
-                    match serde_json::from_str::<AppConfig>(&content) {
-                        Ok(ha_config) => {
-                            info!("Loaded options from Home Assistant options.json");
-                            base_config = ha_config;
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse HA options.json, using defaults: {}", e);
-                        }
+                Ok(content) => match serde_json::from_str::<AppConfig>(&content) {
+                    Ok(ha_config) => {
+                        info!("Loaded options from Home Assistant options.json");
+                        base_config = ha_config;
                     }
-                }
+                    Err(e) => {
+                        warn!("Failed to parse HA options.json, using defaults: {}", e);
+                    }
+                },
                 Err(e) => {
                     warn!("Failed to read HA options.json, using defaults: {}", e);
                 }
@@ -144,8 +157,13 @@ impl ConfigManager {
             let _ = fs::create_dir_all(data_dir_path);
         }
 
-        // Overlay runtime modifications from data_dir/app_config.json
-        let overlay_path = data_dir_path.join("app_config.json");
+        // Load the stable runtime config first, falling back to the legacy file inside data_dir.
+        let legacy_overlay_path = data_dir_path.join("app_config.json");
+        let overlay_path = if runtime_config_path.exists() {
+            runtime_config_path.as_path()
+        } else {
+            legacy_overlay_path.as_path()
+        };
         if overlay_path.exists() {
             if let Ok(content) = fs::read_to_string(&overlay_path) {
                 match serde_json::from_str::<AppConfig>(&content) {
@@ -173,7 +191,7 @@ impl ConfigManager {
         }
 
         Self {
-            config_path: overlay_path,
+            config_path: runtime_config_path,
             current_config: Arc::new(RwLock::new(base_config)),
         }
     }
@@ -186,8 +204,14 @@ impl ConfigManager {
     /// relay so the user never has to manually enter an instance id, URL, or token.
     pub async fn ensure_cloud_registration(&self) {
         let config = self.get_config();
-        let has_instance = config.instance_id.as_ref().is_some_and(|v| !v.trim().is_empty());
-        let has_token = config.websocket_token.as_ref().is_some_and(|v| !v.trim().is_empty());
+        let has_instance = config
+            .instance_id
+            .as_ref()
+            .is_some_and(|v| !v.trim().is_empty());
+        let has_token = config
+            .websocket_token
+            .as_ref()
+            .is_some_and(|v| !v.trim().is_empty());
         if has_instance && has_token {
             return;
         }
@@ -213,7 +237,8 @@ impl ConfigManager {
     }
 
     pub fn update_config(&self, new_config: AppConfig) -> Result<(), String> {
-        new_config.validate_bridge_settings()
+        new_config
+            .validate_bridge_settings()
             .map_err(|err| format!("Invalid relay configuration: {}", err))?;
 
         // Ensure data dir exists
@@ -232,7 +257,7 @@ impl ConfigManager {
         // Persist to overlay path
         let content = serde_json::to_string_pretty(&new_config)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
-        
+
         fs::write(&self.config_path, content)
             .map_err(|e| format!("Failed to write config file: {}", e))?;
 

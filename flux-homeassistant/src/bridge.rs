@@ -1,10 +1,10 @@
+use crate::api::guess_mime;
 use crate::auth::AccountManager;
 use crate::config::ConfigManager;
 use crate::definitions::WEBSOCKET_URL;
 use crate::files::FileManager;
 use crate::search::SearchManager;
 use crate::sharing::ShareRegistry;
-use crate::api::guess_mime;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -87,7 +87,11 @@ impl WebSocketBridge {
             let (ws_token, instance_id, data_dir) = {
                 let config = config_manager.get_config_arc();
                 let config = config.read().unwrap();
-                (config.websocket_token.clone(), config.instance_id.clone(), config.data_dir.clone())
+                (
+                    config.websocket_token.clone(),
+                    config.instance_id.clone(),
+                    config.data_dir.clone(),
+                )
             };
 
             if instance_id.as_deref().unwrap_or("").trim().is_empty() {
@@ -104,7 +108,11 @@ impl WebSocketBridge {
                 continue;
             }
 
-            info!("Attempting WebSocket bridge connection to: {} for instance {}", WEBSOCKET_URL, instance_id.as_deref().unwrap_or("unknown"));
+            info!(
+                "Attempting WebSocket bridge connection to: {} for instance {}",
+                WEBSOCKET_URL,
+                instance_id.as_deref().unwrap_or("unknown")
+            );
 
             match WEBSOCKET_URL.into_client_request() {
                 Ok(mut request) => {
@@ -127,7 +135,10 @@ impl WebSocketBridge {
 
                     match tokio_tungstenite::connect_async(request).await {
                         Ok((ws_stream, response)) => {
-                            info!("Successfully connected to cloud relay! HTTP Status: {}", response.status());
+                            info!(
+                                "Successfully connected to cloud relay! HTTP Status: {}",
+                                response.status()
+                            );
                             backoff = Duration::from_secs(2);
                             bridge_connected.store(true, Ordering::SeqCst);
 
@@ -137,7 +148,10 @@ impl WebSocketBridge {
                             let writer_handle = tokio::spawn(async move {
                                 while let Some(msg) = rx.recv().await {
                                     if let Err(e) = ws_write.send(msg).await {
-                                        error!("Failed to send message over WebSocket bridge: {}", e);
+                                        error!(
+                                            "Failed to send message over WebSocket bridge: {}",
+                                            e
+                                        );
                                         break;
                                     }
                                 }
@@ -148,7 +162,8 @@ impl WebSocketBridge {
                             // detected and reconnected instead of hanging indefinitely.
                             let mut last_activity = tokio::time::Instant::now();
                             let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
-                            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                            heartbeat
+                                .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                             const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(90);
 
                             'read_loop: loop {
@@ -207,7 +222,10 @@ impl WebSocketBridge {
                         }
                         Err(e) => {
                             bridge_connected.store(false, Ordering::SeqCst);
-                            error!("Failed to connect to WebSocket endpoint: {}. Retrying...", e);
+                            error!(
+                                "Failed to connect to WebSocket endpoint: {}. Retrying...",
+                                e
+                            );
                         }
                     }
                 }
@@ -236,12 +254,26 @@ impl WebSocketBridge {
 
         match envelope.type_name.as_str() {
             "proxy_request" => {
-                let request_id = envelope.request_id.clone().unwrap_or_else(|| "unknown".to_string());
-                let payload_value = envelope.payload.ok_or_else(|| "Missing payload for proxy request".to_string())?;
+                let request_id = envelope
+                    .request_id
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string());
+                let payload_value = envelope
+                    .payload
+                    .ok_or_else(|| "Missing payload for proxy request".to_string())?;
                 let request: ProxyRequest = serde_json::from_value(payload_value)
                     .map_err(|e| format!("Failed to decode proxy request payload: {}", e))?;
 
-                let response = Self::handle_proxy_request(request, search_manager, share_registry, account_manager, data_dir, tunnel_token, envelope.instance_id.as_deref().unwrap_or(""), request_id.clone());
+                let response = Self::handle_proxy_request(
+                    request,
+                    search_manager,
+                    share_registry,
+                    account_manager,
+                    data_dir,
+                    tunnel_token,
+                    envelope.instance_id.as_deref().unwrap_or(""),
+                    request_id.clone(),
+                );
                 let outgoing = json!({
                     "type": "proxy_response",
                     "instanceId": envelope.instance_id,
@@ -258,7 +290,10 @@ impl WebSocketBridge {
                 // No-op: relay heartbeat or response already handled upstream.
             }
             _ => {
-                warn!("Ignoring unsupported relay message type: {}", envelope.type_name);
+                warn!(
+                    "Ignoring unsupported relay message type: {}",
+                    envelope.type_name
+                );
             }
         }
 
@@ -276,43 +311,89 @@ impl WebSocketBridge {
         request_id: String,
     ) -> Value {
         let query = request.query.unwrap_or_default();
-        let header_user = request.headers.as_ref()
+        let header_user = request
+            .headers
+            .as_ref()
             .and_then(|headers| headers.get("authorization"))
             .and_then(|v| v.strip_prefix("Bearer "))
             .and_then(|token| account_manager.authenticate_token(token));
 
-        let user = header_user.clone()
-            .or_else(|| request.user.clone())
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "anonymous".to_string());
-
-        let relay_user_is_valid = match (header_user.as_deref(), request.user.as_deref(), request.user_signature.as_deref(), tunnel_token) {
-            (None, Some(user), Some(signature), Some(token)) => verify_relay_user(token, instance_id, &request_id, user, signature),
-            _ => false,
+        // The cloud verifies passwords and asserts the authenticated user over the signed tunnel.
+        // That assertion is only ever enough to mint a session; it cannot authorize data access.
+        let asserted_user = match (
+            request.user.as_deref(),
+            request.user_signature.as_deref(),
+            tunnel_token,
+        ) {
+            (Some(user), Some(signature), Some(token))
+                if verify_relay_user(token, instance_id, &request_id, user, signature) =>
+            {
+                Some(user.to_string())
+            }
+            _ => None,
         };
 
-        if header_user.is_none() && !relay_user_is_valid {
-            return json!({ "status": 401, "body": { "success": false, "message": "Authentication required: bearer token must identify the requesting user" } });
+        if request.method.eq_ignore_ascii_case("POST") && request.path == "/api/auth/session" {
+            let Some(user) = asserted_user else {
+                return json!({ "status": 401, "body": { "success": false, "message": "A signed relay identity assertion is required to mint a session" } });
+            };
+            let display_name = request
+                .body
+                .as_ref()
+                .and_then(|b| b.get("display_name"))
+                .and_then(|v| v.as_str());
+            return match account_manager.create_federated_session(&user, display_name) {
+                Ok(session) => {
+                    json!({ "status": 200, "body": { "success": true, "data": session } })
+                }
+                Err(e) => json!({ "status": 500, "body": { "success": false, "message": e } }),
+            };
         }
 
-        let normalized_user = crate::auth::AccountManager::normalize_username(&user);
-        let canonical_user = crate::auth::AccountManager::normalize_username(&header_user.clone().unwrap_or_else(|| user.clone()));
+        let Some(user) = header_user else {
+            return json!({ "status": 401, "body": { "success": false, "message": "Authentication required: supply an access token issued by this instance" } });
+        };
 
-        if normalized_user != canonical_user {
-            return json!({ "status": 403, "body": { "success": false, "message": "User identity mismatch: request metadata does not match the authenticated session" } });
+        if request.method.eq_ignore_ascii_case("POST") && request.path == "/api/auth/logout" {
+            let token = request
+                .headers
+                .as_ref()
+                .and_then(|headers| headers.get("authorization"))
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .unwrap_or_default();
+            account_manager.revoke_token(token);
+            return json!({ "status": 200, "body": { "success": true } });
+        }
+
+        // A caller may only ever act as the user their own token identifies.
+        if let Some(asserted) = asserted_user.as_deref() {
+            if crate::auth::AccountManager::normalize_username(asserted)
+                != crate::auth::AccountManager::normalize_username(&user)
+            {
+                return json!({ "status": 403, "body": { "success": false, "message": "User identity mismatch: request metadata does not match the authenticated session" } });
+            }
         }
 
         match request.method.to_ascii_uppercase().as_str() {
-            "POST" if request.path == "/api/auth/local-session" => {
-                match account_manager.create_cloud_session(&user) {
-                    Ok(session) => json!({ "status": 200, "body": { "success": true, "data": session } }),
-                    Err(_) => json!({ "status": 500, "body": { "success": false, "message": "Could not create a local cloud session" } }),
-                }
+            "GET" if request.path == "/api/auth/session" => {
+                json!({ "status": 200, "body": { "success": true, "data": { "user": user } } })
             }
             "GET" if request.path.starts_with("/api/search") => {
-                let q = query.get("q").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let limit = query.get("limit").and_then(|v| v.as_str()).and_then(|s| s.parse::<usize>().ok())
-                    .or_else(|| query.get("limit").and_then(|v| v.as_u64()).and_then(|n| usize::try_from(n).ok()))
+                let q = query
+                    .get("q")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let limit = query
+                    .get("limit")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .or_else(|| {
+                        query
+                            .get("limit")
+                            .and_then(|v| v.as_u64())
+                            .and_then(|n| usize::try_from(n).ok())
+                    })
                     .unwrap_or(20)
                     .clamp(1, 100);
 
@@ -322,12 +403,30 @@ impl WebSocketBridge {
                 }
             }
             "POST" if request.path.starts_with("/api/files") => {
-                let file_path = query.get("path").and_then(|v| v.as_str())
-                    .or_else(|| request.body.as_ref().and_then(|b| b.get("path")).and_then(|v| v.as_str()))
+                let file_path = query
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        request
+                            .body
+                            .as_ref()
+                            .and_then(|b| b.get("path"))
+                            .and_then(|v| v.as_str())
+                    })
                     .unwrap_or("upload.bin")
                     .to_string();
-                let content_b64 = request.body.as_ref().and_then(|b| b.get("content_b64")).and_then(|v| v.as_str())
-                    .or_else(|| request.body.as_ref().and_then(|b| b.get("content")).and_then(|v| v.as_str()))
+                let content_b64 = request
+                    .body
+                    .as_ref()
+                    .and_then(|b| b.get("content_b64"))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        request
+                            .body
+                            .as_ref()
+                            .and_then(|b| b.get("content"))
+                            .and_then(|v| v.as_str())
+                    })
                     .unwrap_or("")
                     .to_string();
 
@@ -335,7 +434,7 @@ impl WebSocketBridge {
                 for component in Path::new(&file_path).components() {
                     match component {
                         Component::Normal(value) => relative_path.push(value),
-                        Component::RootDir | Component::CurDir => {},
+                        Component::RootDir | Component::CurDir => {}
                         Component::ParentDir | Component::Prefix(_) => {
                             return json!({ "status": 400, "body": { "success": false, "message": "Upload path must stay inside the user workspace" } });
                         }
@@ -348,12 +447,46 @@ impl WebSocketBridge {
 
                 let decoded = match STANDARD.decode(&content_b64) {
                     Ok(bytes) => bytes,
-                    Err(e) => return json!({ "status": 400, "body": { "success": false, "message": format!("Failed to decode file payload: {}", e) } }),
+                    Err(e) => {
+                        return json!({ "status": 400, "body": { "success": false, "message": format!("Failed to decode file payload: {}", e) } })
+                    }
                 };
 
-                match FileManager::save_and_index_file(&decoded, &target_path, search_manager, Some(share_registry)) {
-                    Ok(_) => json!({ "status": 200, "body": { "success": true, "message": "File uploaded and indexed", "path": file_path }, "data": { "path": file_path } }),
-                    Err(e) => json!({ "status": 500, "body": { "success": false, "message": format!("Upload failed: {}", e) } }),
+                match FileManager::save_and_index_file(
+                    &decoded,
+                    &target_path,
+                    search_manager,
+                    Some(share_registry),
+                ) {
+                    Ok(_) => {
+                        json!({ "status": 200, "body": { "success": true, "message": "File uploaded and indexed", "path": file_path }, "data": { "path": file_path } })
+                    }
+                    Err(e) => {
+                        json!({ "status": 500, "body": { "success": false, "message": format!("Upload failed: {}", e) } })
+                    }
+                }
+            }
+            "GET" if request.path == "/api/files/list" => {
+                let path = query.get("path").and_then(|v| v.as_str()).unwrap_or("/");
+                let recursive = query
+                    .get("recursive")
+                    .map(|v| v.as_bool().unwrap_or_else(|| v.as_str() == Some("true")))
+                    .unwrap_or(false);
+                let limit = query
+                    .get("limit")
+                    .and_then(|v| {
+                        v.as_u64()
+                            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                    })
+                    .and_then(|n| usize::try_from(n).ok())
+                    .unwrap_or(crate::files::MAX_LIST_ENTRIES);
+                let workspace_root = Path::new(data_dir).join(&user);
+                match FileManager::list_directory(&workspace_root, path, recursive, limit) {
+                    Ok(listing) => {
+                        let listing = json!(listing);
+                        json!({ "status": 200, "body": { "success": true, "data": listing }, "data": listing })
+                    }
+                    Err(e) => json!({ "status": 400, "body": { "success": false, "message": e } }),
                 }
             }
             "GET" if request.path.starts_with("/api/files") => {
@@ -375,7 +508,9 @@ impl WebSocketBridge {
                         });
                         json!({ "status": 200, "body": payload, "data": payload })
                     }
-                    Err(e) => json!({ "status": 500, "body": { "success": false, "message": format!("Failed to read file: {}", e) } }),
+                    Err(e) => {
+                        json!({ "status": 500, "body": { "success": false, "message": format!("Failed to read file: {}", e) } })
+                    }
                 }
             }
             "DELETE" if request.path.starts_with("/api/files") => {
@@ -384,12 +519,19 @@ impl WebSocketBridge {
                 if !file_path_buf.exists() {
                     return json!({ "status": 404, "body": { "success": false, "message": "File not found" } });
                 }
-                if !share_registry.is_owner(&user, file_path, data_dir) && !account_manager.is_admin(&user) {
+                if !share_registry.is_owner(&user, file_path, data_dir)
+                    && !account_manager.is_admin(&user)
+                {
                     return json!({ "status": 403, "body": { "success": false, "message": "Access denied" } });
                 }
 
                 match FileManager::delete_file(&file_path_buf, search_manager) {
-                    Ok(_) => json!({ "status": 200, "body": { "success": true, "message": "File deleted" } }),
+                    Ok(_) => {
+                        if let Err(error) = share_registry.remove_deleted_file(file_path) {
+                            return json!({ "status": 500, "body": { "success": false, "message": error } });
+                        }
+                        json!({ "status": 200, "body": { "success": true, "message": "File deleted" } })
+                    }
                     Err(e) => json!({ "status": 500, "body": { "success": false, "message": e } }),
                 }
             }
@@ -397,41 +539,71 @@ impl WebSocketBridge {
                 json!({ "status": 200, "body": { "success": true, "message": "Config read", "data": { "user": user } } })
             }
             "POST" if request.path == "/api/shares/share" => {
-                let file_path = request.body.as_ref()
+                let file_path = request
+                    .body
+                    .as_ref()
                     .and_then(|body| body.get("file_path"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let shared_with = request.body.as_ref()
+                let shared_with = request
+                    .body
+                    .as_ref()
                     .and_then(|body| body.get("shared_with"))
                     .and_then(Value::as_array)
-                    .map(|users| users.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>())
+                    .map(|users| {
+                        users
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
                     .unwrap_or_default();
                 if file_path.is_empty() || !share_registry.is_owner(&user, file_path, data_dir) {
                     return json!({ "status": 403, "body": { "success": false, "message": "Only the owner can share this file" } });
                 }
                 match share_registry.add_share(&user, file_path, shared_with) {
                     Ok(()) => {
-                        let _ = FileManager::process_and_index_file(Path::new(file_path), search_manager, Some(share_registry));
+                        if let Err(error) = FileManager::process_and_index_file(
+                            Path::new(file_path),
+                            search_manager,
+                            Some(share_registry),
+                        ) {
+                            return json!({ "status": 500, "body": { "success": false, "message": error } });
+                        }
                         json!({ "status": 200, "body": { "success": true, "message": "File successfully shared" } })
                     }
-                    Err(error) => json!({ "status": 400, "body": { "success": false, "message": error } }),
+                    Err(error) => {
+                        json!({ "status": 400, "body": { "success": false, "message": error } })
+                    }
                 }
             }
             "POST" if request.path == "/api/shares/unshare" => {
-                let file_path = request.body.as_ref()
+                let file_path = request
+                    .body
+                    .as_ref()
                     .and_then(|body| body.get("file_path"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let user_to_remove = request.body.as_ref()
+                let user_to_remove = request
+                    .body
+                    .as_ref()
                     .and_then(|body| body.get("user_to_remove"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 match share_registry.remove_share(&user, file_path, user_to_remove) {
                     Ok(()) => {
-                        let _ = FileManager::process_and_index_file(Path::new(file_path), search_manager, Some(share_registry));
+                        if let Err(error) = FileManager::process_and_index_file(
+                            Path::new(file_path),
+                            search_manager,
+                            Some(share_registry),
+                        ) {
+                            return json!({ "status": 500, "body": { "success": false, "message": error } });
+                        }
                         json!({ "status": 200, "body": { "success": true, "message": "File sharing permissions updated" } })
                     }
-                    Err(error) => json!({ "status": 400, "body": { "success": false, "message": error } }),
+                    Err(error) => {
+                        json!({ "status": 400, "body": { "success": false, "message": error } })
+                    }
                 }
             }
             "GET" if request.path == "/api/shares/list" => {
@@ -443,14 +615,48 @@ impl WebSocketBridge {
                     }
                 })
             }
-            _ => json!({ "status": 501, "body": { "success": false, "message": format!("Unsupported proxy route for path: {}", request.path) } }),
+            _ if request.path.starts_with("/api/faces/") => {
+                let query: HashMap<String, String> = query
+                    .iter()
+                    .map(|(key, value)| {
+                        let value = value
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| value.to_string());
+                        (key.clone(), value)
+                    })
+                    .collect();
+                let (status, body) = crate::faces::handle_request(
+                    search_manager.faces(),
+                    data_dir,
+                    &user,
+                    &request.method,
+                    &request.path,
+                    &query,
+                    request.body.as_ref().unwrap_or(&Value::Null),
+                );
+                json!({ "status": status, "body": body })
+            }
+            _ => {
+                json!({ "status": 501, "body": { "success": false, "message": format!("Unsupported proxy route for path: {}", request.path) } })
+            }
         }
     }
 }
 
-fn verify_relay_user(token: &str, instance_id: &str, request_id: &str, user: &str, signature: &str) -> bool {
-    let Ok(expected) = hex::decode(signature) else { return false; };
-    let Ok(mut mac) = Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes()) else { return false; };
+fn verify_relay_user(
+    token: &str,
+    instance_id: &str,
+    request_id: &str,
+    user: &str,
+    signature: &str,
+) -> bool {
+    let Ok(expected) = hex::decode(signature) else {
+        return false;
+    };
+    let Ok(mut mac) = Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes()) else {
+        return false;
+    };
     mac.update(format!("{instance_id}\n{request_id}\n{user}").as_bytes());
     mac.verify_slice(&expected).is_ok()
 }
@@ -464,14 +670,23 @@ mod tests {
         let request = ProxyRequest {
             method: "GET".to_string(),
             path: "/api/search".to_string(),
-            query: Some(HashMap::from([("q".to_string(), Value::String("*".to_string())), ("user".to_string(), Value::String("mallory".to_string()))])),
-            headers: Some(HashMap::from([("authorization".to_string(), "Bearer real-token".to_string())])),
+            query: Some(HashMap::from([
+                ("q".to_string(), Value::String("*".to_string())),
+                ("user".to_string(), Value::String("mallory".to_string())),
+            ])),
+            headers: Some(HashMap::from([(
+                "authorization".to_string(),
+                "Bearer real-token".to_string(),
+            )])),
             body: None,
             user: Some("mallory".to_string()),
             user_signature: None,
         };
 
-        let resolved = request.user.clone().unwrap_or_else(|| "anonymous".to_string());
+        let resolved = request
+            .user
+            .clone()
+            .unwrap_or_else(|| "anonymous".to_string());
         assert_ne!(resolved, "alice");
         assert_eq!(resolved, "mallory");
     }
@@ -487,7 +702,11 @@ mod tests {
         let signature = hex::encode(mac.finalize().into_bytes());
 
         assert!(verify_relay_user(
-            token, instance_id, request_id, user, &signature
+            token,
+            instance_id,
+            request_id,
+            user,
+            &signature
         ));
         assert!(!verify_relay_user(
             "wrong-token",

@@ -321,6 +321,13 @@ export class UserStore {
     return result.rows[0]?.email;
   }
 
+  async revokeSession(instanceId: string, token: string): Promise<void> {
+    await this.pool.query(
+      'DELETE FROM sessions WHERE token_hash = $1 AND instance_id = $2',
+      [hashToken(token), instanceId]
+    );
+  }
+
   private async createSession(userId: number, instanceId: string): Promise<string> {
     const accessToken = generateToken();
     await this.pool.query(

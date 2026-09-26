@@ -139,11 +139,34 @@ export default function MainScreen({ client, diagnostics, onLoggedOut }: Props) 
 
     try {
       await client.connect();
-      const items = await client.search({ q: searchQuery.trim(), limit: 300 });
+      const trimmedQuery = searchQuery.trim();
+      let items: SearchResult[];
+      if (trimmedQuery) {
+        items = await client.search({ q: trimmedQuery, limit: 300 });
+      } else {
+        const [listing, indexed] = await Promise.all([
+          client.listFiles('/Photos', { recursive: true }),
+          client.search({ q: '', limit: 300 }),
+        ]);
+        const indexedByPath = new Map(indexed.map((item) => [item.path, item]));
+        items = listing.entries
+          .filter((entry) => !entry.is_dir && IMAGE_FILE.test(entry.name))
+          .map((entry) => indexedByPath.get(entry.path) ?? {
+            path: entry.path,
+            file_name: entry.name,
+            content_preview: '',
+            tags: [],
+            faces: [],
+            date_created: (entry.modified_at ?? 0) / 1000,
+            owner: client.getAuthSession()?.user ?? '',
+            allowed_users: [],
+            score: 0,
+          });
+      }
       // Search also returns notes, contacts and album manifests stored in the same workspace.
       const sorted = items.filter((item) => IMAGE_FILE.test(item.path)).sort((a, b) => b.date_created - a.date_created);
       setPhotos(sorted);
-      setStatus(searchQuery.trim() ? `${sorted.length} results for “${searchQuery.trim()}”` : `${sorted.length} photos`);
+      setStatus(trimmedQuery ? `${sorted.length} results for “${trimmedQuery}”` : `${sorted.length} photos`);
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : 'Failed to load photos';
       setError(message);
@@ -425,6 +448,35 @@ export default function MainScreen({ client, diagnostics, onLoggedOut }: Props) 
               </View>
             ) : null}
 
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Albums</Text>
+              <Pressable style={styles.reviewButton} onPress={() => setCreatingAlbum(true)} hitSlop={8}>
+                <Ionicons name="add-circle-outline" size={16} color="#2563eb" />
+                <Text style={styles.reviewText}>New album</Text>
+              </Pressable>
+            </View>
+            {albums.length === 0 ? (
+              <Text style={styles.empty}>No albums yet.</Text>
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.albumStrip}>
+                {albums.map((album) => (
+                  <Pressable key={album.id} style={styles.albumItem} onPress={() => setOpenAlbumId(album.id)}>
+                    {album.coverPath ? (
+                      <PhotoThumbnail client={client} path={album.coverPath} style={styles.albumCover} />
+                    ) : (
+                      <View style={[styles.albumCover, styles.albumCoverEmpty]}>
+                        <Ionicons name="images-outline" size={24} color="#94a3b8" />
+                      </View>
+                    )}
+                    <Text style={styles.albumTitle} numberOfLines={1}>{album.title}</Text>
+                    <Text style={styles.albumMeta}>
+                      {album.photoPaths.length} {album.photoPaths.length === 1 ? 'photo' : 'photos'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
+
             <Text style={styles.sectionTitle}>Photos</Text>
           </View>
         }
@@ -439,8 +491,28 @@ export default function MainScreen({ client, diagnostics, onLoggedOut }: Props) 
           clearPhotoCache();
           void loadPhotos(query);
           void loadPeople();
+          void loadAlbums();
         }}
         refreshing={false}
+      />
+
+      <AlbumNameModal
+        visible={creatingAlbum}
+        title="New album"
+        confirmLabel="Create"
+        onCancel={() => setCreatingAlbum(false)}
+        onConfirm={(name) => {
+          setCreatingAlbum(false);
+          void (async () => {
+            const album = createAlbum(name);
+            try {
+              setAlbums(await saveAlbum(client, album));
+              setOpenAlbumId(album.id);
+            } catch (createError) {
+              setError(createError instanceof Error ? createError.message : 'Could not create the album');
+            }
+          })();
+        }}
       />
     </View>
   );
@@ -617,6 +689,33 @@ const styles = StyleSheet.create({
   },
   personUnnamed: {
     color: '#94a3b8',
+  },
+  albumStrip: {
+    gap: 12,
+    paddingBottom: 8,
+  },
+  albumItem: {
+    width: 104,
+    gap: 4,
+  },
+  albumCover: {
+    width: 104,
+    height: 104,
+    borderRadius: 10,
+  },
+  albumCoverEmpty: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e2e8f0',
+  },
+  albumTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  albumMeta: {
+    fontSize: 11,
+    color: '#64748b',
   },
   diagnosticsPanel: {
     borderRadius: 10,

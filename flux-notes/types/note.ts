@@ -224,6 +224,8 @@ export type NoteItem = {
   createdAt: number;
   updatedAt: number;
   archived?: boolean;
+  /** Server file modification time (Unix ms) this copy was downloaded at; used to skip re-downloads. */
+  serverModifiedAt?: number;
 };
 
 export type ViewMode = 'grid' | 'list';

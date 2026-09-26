@@ -1,21 +1,23 @@
-mod config;
-mod definitions;
-mod storage;
-mod cv;
-mod detect;
-mod search;
-mod files;
-mod bridge;
 mod api;
-mod sharing;
 mod auth;
+mod bridge;
+mod config;
+mod cv;
+mod definitions;
+mod detect;
+mod faces;
+mod files;
+mod search;
+mod secure;
+mod sharing;
+mod storage;
 
-use config::ConfigManager;
-use search::SearchManager;
-use files::FileManager;
-use bridge::WebSocketBridge;
-use api::{AppState, create_router};
+use api::{create_router, AppState};
 use auth::AccountManager;
+use bridge::WebSocketBridge;
+use config::ConfigManager;
+use files::FileManager;
+use search::SearchManager;
 use sharing::ShareRegistry;
 
 use std::net::SocketAddr;
@@ -53,8 +55,9 @@ async fn main() {
     // 1. Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,flux_homeassistant=debug")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("info,flux_homeassistant=debug")
+            }),
         )
         .init();
 
@@ -75,18 +78,16 @@ async fn main() {
 
     info!(
         "Loaded settings: data_dir={}, scan_dirs={:?}, instance_id={:?}",
-        current_config.data_dir,
-        current_config.scan_dirs,
-        current_config.instance_id
+        current_config.data_dir, current_config.scan_dirs, current_config.instance_id
     );
 
     // 3. Initialize account manager and share registry
     let account_manager = AccountManager::new(&current_config.data_dir);
     let share_registry = ShareRegistry::new(&current_config.data_dir);
 
-    // 4. Initialize Tantivy search index
+    // 4. Initialize per-user Tantivy search indexes
     let index_dir = format!("{}/index", current_config.data_dir);
-    let search_manager = match SearchManager::new(&index_dir) {
+    let search_manager = match SearchManager::with_registry(&index_dir, share_registry.clone()) {
         Ok(sm) => sm,
         Err(e) => {
             error!("CRITICAL ERROR: Failed to initialize search index: {}", e);
@@ -106,7 +107,10 @@ async fn main() {
                 FileManager::scan_directory_recursive(&path_buf, &sm_clone, Some(&reg_clone));
             });
         } else {
-            info!("Scan directory {:?} does not exist. Skipping initial scan.", dir);
+            info!(
+                "Scan directory {:?} does not exist. Skipping initial scan.",
+                dir
+            );
         }
     }
 
@@ -114,16 +118,17 @@ async fn main() {
     let watcher_sm = search_manager.clone();
     let watcher_dirs = current_config.scan_dirs.clone();
     let watcher_reg = share_registry.clone();
-    let _watcher = match FileManager::start_file_watcher(watcher_dirs, watcher_sm, Some(watcher_reg)) {
-        Ok(w) => {
-            info!("Background file watcher started successfully.");
-            Some(w)
-        }
-        Err(e) => {
-            error!("Failed to initialize directory watcher: {}", e);
-            None
-        }
-    };
+    let _watcher =
+        match FileManager::start_file_watcher(watcher_dirs, watcher_sm, Some(watcher_reg)) {
+            Ok(w) => {
+                info!("Background file watcher started successfully.");
+                Some(w)
+            }
+            Err(e) => {
+                error!("Failed to initialize directory watcher: {}", e);
+                None
+            }
+        };
 
     // 7. Start outbound WebSocket client/bridge
     let bridge_connected = Arc::new(AtomicBool::new(false));
@@ -133,7 +138,14 @@ async fn main() {
     let bridge_accounts = account_manager.clone();
     let bridge_connected_flag = bridge_connected.clone();
     tokio::spawn(async move {
-        WebSocketBridge::start(bridge_config, bridge_sm, bridge_reg, bridge_accounts, bridge_connected_flag).await;
+        WebSocketBridge::start(
+            bridge_config,
+            bridge_sm,
+            bridge_reg,
+            bridge_accounts,
+            bridge_connected_flag,
+        )
+        .await;
     });
 
     // 8. Setup and start REST API
@@ -144,10 +156,10 @@ async fn main() {
         account_manager,
         bridge_connected,
     };
-    
+
     let app = create_router(state);
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3589));
+
     info!("Local personal search API listening on: http://{}", addr);
 
     let listener = match tokio::net::TcpListener::bind(addr).await {

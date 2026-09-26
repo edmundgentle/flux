@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FluxClient } from '../dist/client.js';
+import { SecureChannel } from '../dist/secure.js';
 
 const createJsonResponse = (body, init = {}) => new Response(JSON.stringify(body), {
   status: 200,
@@ -19,7 +20,7 @@ test('register stores an auth session for later requests', async () => {
       const url = String(input);
       calls.push({ url, method: init?.method ?? 'GET', headers: init?.headers });
       if (url.endsWith('/api/auth/register')) {
-        return createJsonResponse({ success: true, message: 'ok', data: { user: 'alice', token: 'abc123', instanceId: 'instance-a' } });
+        return createJsonResponse({ success: true, message: 'ok', data: { user: 'alice', token: 'abc123', relaySession: 'relay-1', instanceId: 'instance-a' } });
       }
       throw new Error(`Unexpected request: ${url}`);
     },
@@ -43,7 +44,7 @@ test('login stores the returned auth token', async () => {
     fetchImpl: async (input) => {
       const url = String(input);
       if (url.endsWith('/api/auth/login')) {
-        return createJsonResponse({ success: true, message: 'ok', data: { user: 'bob', token: 'def456', instanceId: 'instance-a' } });
+        return createJsonResponse({ success: true, message: 'ok', data: { user: 'bob', token: 'def456', relaySession: 'relay-1', instanceId: 'instance-a' } });
       }
       throw new Error(`Unexpected request: ${url}`);
     },
@@ -88,6 +89,7 @@ test('login with specific instance requested sends instance_id', async () => {
         data: {
           user: 'bob@example.com',
           token: 'tok-123',
+          relaySession: 'relay-1',
           instanceId: 'instance-custom',
           instances: [{ instanceId: 'instance-custom', label: 'My House' }],
         },
@@ -102,27 +104,59 @@ test('login with specific instance requested sends instance_id', async () => {
   assert.equal(client.getAuthSession()?.token, 'tok-123');
 });
 
-test('exchanges the cloud session for a local-only token', async () => {
+test('mints an instance token when login could not reach the instance', async () => {
   const calls = [];
   const client = new FluxClient({
     relayUrl: 'https://relay.test',
-    instanceId: 'instance-a',
-    accessToken: 'cloud-token',
+    instanceId: '',
     autoConnect: false,
     fetchImpl: async (input, init) => {
-      calls.push({ url: String(input), headers: init?.headers });
-      return createJsonResponse({ success: true, data: { user: 'alice', token: 'local-token' } });
+      const url = String(input);
+      calls.push({ url, headers: init?.headers });
+      if (url.endsWith('/api/auth/login')) {
+        return createJsonResponse({ success: true, data: { user: 'alice', relaySession: 'relay-1', instanceId: 'instance-a' } });
+      }
+      return createJsonResponse({ success: true, data: { user: 'alice', token: 'instance-token', expiresAt: '2027-01-01T00:00:00Z' } });
     },
   });
 
-  await client.exchangeCloudSessionForLocal('http://homeassistant.local:8080');
+  const session = await client.login({ username: 'alice', password: 'secret' });
 
-  assert.equal(calls[0].url, 'https://relay.test/api/auth/local-session');
-  assert.deepEqual(calls[0].headers, {
-    'Content-Type': 'application/json',
-    Authorization: 'Bearer cloud-token',
-    'x-instance-id': 'instance-a',
+  assert.equal(calls[1].url, 'https://relay.test/api/auth/session');
+  assert.equal(calls[1].headers['x-relay-session'], 'relay-1');
+  assert.equal(calls[1].headers['x-instance-id'], 'instance-a');
+  assert.equal(session.token, 'instance-token');
+  assert.equal(client.getAuthSession()?.token, 'instance-token');
+});
+
+test('accepts the same token on the local instance without a second sign-in', async () => {
+  const calls = [];
+  const channel = new SecureChannel('instance-token', 'key-1');
+  const client = new FluxClient({
+    relayUrl: 'https://relay.test',
+    instanceId: 'instance-a',
+    accessToken: 'instance-token',
+    keyId: 'key-1',
+    relaySession: 'relay-1',
+    autoConnect: false,
+    fetchImpl: async (input, init) => {
+      calls.push({ url: String(input), headers: init?.headers });
+      const { seq, request } = await channel.openRequest(new Uint8Array(init.body));
+      calls.push({ innerPath: request.path });
+      const sealed = await channel.sealResponse(seq, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ success: true, data: { user: 'alice' } })),
+      });
+      return new Response(sealed, { status: 200 });
+    },
   });
+
+  await client.useLocalInstance('http://homeassistant.local:3589');
+
+  assert.equal(calls[0].url, 'http://homeassistant.local:3589/api/secure');
+  assert.equal(calls[0].headers['x-flux-key-id'], 'key-1');
+  assert.equal(calls[1].innerPath, '/api/auth/session');
   assert.equal(client.getTransportMode(), 'local');
 });
 

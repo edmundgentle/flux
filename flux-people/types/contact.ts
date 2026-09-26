@@ -63,5 +63,7 @@ export type ContactItem = {
   createdAt: number;
   updatedAt: number;
   path: string;
+  /** Server file modification time (Unix ms) this copy was downloaded at; used to skip re-downloads. */
+  serverModifiedAt?: number;
 };
 

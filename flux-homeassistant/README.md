@@ -1,6 +1,8 @@
 # Flux Home Assistant add-on
 
-The add-on exposes its local API on port 8080 and stores its index, accounts, sessions, and uploaded files under `data_dir`.
+The add-on exposes its local API on port 3589 and stores its index, accounts, sessions, and uploaded files under `data_dir`.
+
+Search indexes are stored per user under `data_dir/index`. Shared files are indexed for each named recipient; public (`*`) shares use a separate public index searched alongside the user's index. The original single index is migrated on startup using current sharing permissions and left on disk after migration.
 
 The cloud relay is enabled automatically. On first startup, the add-on registers with the configured relay definition and persists the returned instance ID and tunnel token in its data directory. The relay endpoint is fixed in the application and is not an add-on option.
 
@@ -21,4 +23,4 @@ The admin dashboard is only exposed through Home Assistant's Ingress: use the **
 Each instance can be reached two ways, using the **same account username/password** for both:
 
 - **Cloud relay**: the instance opens an outbound WebSocket tunnel to the fixed cloud relay endpoint, authenticated with the provisioned `instance_id` and tunnel token, so mobile clients can reach it remotely through the relay.
-- **Local network**: the instance's own HTTP API on port 8080 is reachable directly, e.g. `http://homeassistant.local:8080/`, with no dependency on the cloud relay. Use `FluxClient#loginLocal(baseUrl, credentials)` in the SDK to sign in locally.
+- **Local network**: the instance's own HTTP API on port 3589 is reachable directly, e.g. `http://homeassistant.local:3589/`, with no dependency on the cloud relay. Use `FluxClient#loginLocal(baseUrl, credentials)` in the SDK to sign in locally.

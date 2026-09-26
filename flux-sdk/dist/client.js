@@ -1,8 +1,14 @@
 import { buildRelaySocketUrl, getMimeType, sleep, uuid, safeJsonParse } from './utils.js';
+import { SecureChannel, KEY_ID_HEADER, buildMultipartBody } from './secure.js';
 /** The Flux cloud relay URL. Fixed and not user-customisable; only overridable for tests. */
 export const FLUX_CLOUD_URL = 'https://flux-relay-fvnyy.ondigitalocean.app';
 const DEFAULT_STORAGE_KEY = 'flux.auth.session';
-const DEFAULT_LOCAL_BASE_URL = 'http://homeassistant.local:8080';
+const DEFAULT_LOCAL_BASE_URL = 'http://homeassistant.local:3589';
+/**
+ * Sequence numbers must never repeat for a given key, so they are reserved in blocks and only
+ * persisted when a block runs out - one storage write per block instead of one per request.
+ */
+const SEQUENCE_RESERVE_BLOCK = 1000;
 function encodeBase64(bytes) {
     let binary = '';
     const chunkSize = 0x8000;
@@ -41,7 +47,11 @@ export class FluxClient {
     storageKey;
     networkMonitor;
     isOnLocalNetwork = null;
-    localSessionExchange = null;
+    localProbe = null;
+    sessionMint = null;
+    channel = null;
+    sequence = 0;
+    sequenceReserved = 0;
     /** Which transport actually served the most recent (or currently in-flight) request. */
     activeTransport = 'relay';
     /** Resolves once any previously persisted session has been restored from storage. */
@@ -78,11 +88,16 @@ export class FluxClient {
             if (state?.session) {
                 this.authSession = state.session;
                 this.config.accessToken = state.session.token;
+                this.config.keyId = state.session.keyId;
+                this.config.relaySession = state.session.relaySession;
                 this.config.instanceId = state.session.instanceId;
+            }
+            if (typeof state?.sequence === 'number') {
+                this.sequence = state.sequence;
+                this.sequenceReserved = state.sequence;
             }
             if (state?.local) {
                 this.config.localBaseUrl = state.local.baseUrl;
-                this.config.localAccessToken = state.local.accessToken;
                 this.config.localUseLan = true;
             }
         }
@@ -96,9 +111,10 @@ export class FluxClient {
             return;
         const state = {
             session: this.authSession ?? undefined,
-            local: this.config.localUseLan && this.config.localBaseUrl && this.config.localAccessToken
-                ? { baseUrl: this.config.localBaseUrl, accessToken: this.config.localAccessToken }
+            local: this.config.localUseLan && this.config.localBaseUrl
+                ? { baseUrl: this.config.localBaseUrl }
                 : undefined,
+            sequence: this.sequenceReserved || undefined,
         };
         if (!state.session && !state.local) {
             await this.storage.removeItem(this.storageKey);
@@ -106,16 +122,87 @@ export class FluxClient {
         }
         await this.storage.setItem(this.storageKey, JSON.stringify(state));
     }
-    /** True once a cloud or local session has been established (via login, register, loginLocal, or restored from storage). */
+    /** True once an access token has been issued by the instance (via login, register, or restored from storage). */
     isLoggedIn() {
-        return Boolean(this.authSession?.token || (this.config.localUseLan && this.config.localAccessToken));
+        return Boolean(this.accessToken());
+    }
+    /** The instance-issued token that authorizes data access on both the LAN and relay transports. */
+    accessToken() {
+        return this.authSession?.token || this.config.accessToken;
+    }
+    /** Headers for a request routed through the cloud: relay admission plus the instance token. */
+    cloudHeaders(extra = {}) {
+        return {
+            'x-instance-id': this.config.instanceId,
+            'x-relay-session': this.config.relaySession || '',
+            Authorization: `Bearer ${this.accessToken() || ''}`,
+            ...extra,
+        };
     }
     get relayUrl() {
         return this.config.relayUrl || FLUX_CLOUD_URL;
     }
-    /** True when local instance credentials are known, regardless of whether they're currently in use. */
+    /** True when a local instance address is known and we hold a token to present to it. */
     hasLocalCredentials() {
-        return Boolean(this.config.localBaseUrl && this.config.localAccessToken);
+        return Boolean(this.config.localBaseUrl && this.config.localUseLan && this.secureChannel());
+    }
+    /** The AES-GCM channel used for LAN requests, derived from the instance-issued token. */
+    secureChannel() {
+        const token = this.accessToken();
+        const keyId = this.config.keyId;
+        if (!token || !keyId)
+            return null;
+        if (!this.channel || this.channel.keyId !== keyId)
+            this.channel = new SecureChannel(token, keyId);
+        return this.channel;
+    }
+    async nextSequence() {
+        this.sequence += 1;
+        if (this.sequence > this.sequenceReserved) {
+            this.sequenceReserved = this.sequence + SEQUENCE_RESERVE_BLOCK;
+            await this.persistState();
+        }
+        return this.sequence;
+    }
+    /**
+     * Sends a request to the local instance inside an encrypted envelope. Nothing readable -
+     * including the access token - is exposed on the LAN.
+     */
+    async secureLocalRequest(request) {
+        const channel = this.secureChannel();
+        const baseUrl = this.config.localBaseUrl;
+        if (!channel || !baseUrl)
+            throw new Error('No local session key is available');
+        const send = async () => {
+            const seq = await this.nextSequence();
+            const envelope = await channel.sealRequest(seq, request);
+            const response = await this.fetchImpl(new URL('/api/secure', baseUrl), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/octet-stream', [KEY_ID_HEADER]: channel.keyId },
+                body: envelope,
+            });
+            if (!response.ok)
+                throw new Error(`Local instance rejected the envelope (${response.status})`);
+            return await channel.openResponse(seq, new Uint8Array(await response.arrayBuffer()));
+        };
+        const result = await send();
+        if (result.status !== 409)
+            return result;
+        // The instance restarted and advanced its replay window past our counter; resynchronise.
+        const payload = safeJsonParse(new TextDecoder().decode(result.body));
+        if (typeof payload?.next_seq !== 'number')
+            return result;
+        this.sequence = payload.next_seq;
+        this.sequenceReserved = 0;
+        this.diagnostic('info', 'transport.local.resync', `Resynchronised envelope sequence to ${payload.next_seq}`);
+        return await send();
+    }
+    async secureLocalJson(request) {
+        const result = await this.secureLocalRequest(request);
+        const text = new TextDecoder().decode(result.body);
+        if (result.status >= 400)
+            throw new Error(text || `Request failed: ${result.status}`);
+        return text ? JSON.parse(text) : undefined;
     }
     /** Whether the local instance should be tried before the cloud, based on known credentials and network status. */
     shouldPreferLocal() {
@@ -124,13 +211,17 @@ export class FluxClient {
     preferredTransport() {
         return this.shouldPreferLocal() ? 'local' : 'relay';
     }
-    async ensureLocalSession() {
-        if (this.hasLocalCredentials() || this.isOnLocalNetwork === false || !this.config.instanceId || !(this.authSession?.token || this.config.accessToken))
+    /**
+     * Probes the local instance once so the LAN transport is only preferred when it is actually
+     * reachable. No credential exchange is involved - the token already works on both transports.
+     */
+    async ensureLocalReachable() {
+        if (this.config.localUseLan || this.isOnLocalNetwork === false || !this.accessToken())
             return;
-        if (this.localSessionExchange)
-            return await this.localSessionExchange;
+        if (this.localProbe)
+            return await this.localProbe;
         const baseUrl = this.config.localBaseUrl || DEFAULT_LOCAL_BASE_URL;
-        this.localSessionExchange = (async () => {
+        this.localProbe = (async () => {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 1500);
             try {
@@ -145,49 +236,74 @@ export class FluxClient {
             finally {
                 clearTimeout(timeout);
             }
-            try {
-                await this.exchangeCloudSessionForLocal(baseUrl);
-            }
-            catch (error) {
-                const message = error instanceof Error ? error.message : 'Local session exchange failed';
-                this.diagnostic('warn', 'transport.local.exchange.failed', message);
-            }
+            this.config.localBaseUrl = baseUrl;
+            this.config.localUseLan = true;
+            await this.persistState();
+            this.diagnostic('info', 'transport.local.available', `Local instance is reachable at ${baseUrl}`);
         })().finally(() => {
-            this.localSessionExchange = null;
+            this.localProbe = null;
         });
-        await this.localSessionExchange;
+        await this.localProbe;
+    }
+    /**
+     * Obtains an instance-issued access token through the relay when we don't have one yet - for
+     * example when the instance was offline at login, or the previous token expired or was revoked.
+     */
+    async ensureInstanceSession() {
+        const relaySession = this.config.relaySession;
+        const instanceId = this.config.instanceId?.trim();
+        if (this.accessToken() || !relaySession || !instanceId)
+            return;
+        if (this.sessionMint)
+            return await this.sessionMint;
+        this.sessionMint = (async () => {
+            const response = await this.fetchImpl(new URL('/api/auth/session', this.relayUrl), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-relay-session': relaySession, 'x-instance-id': instanceId },
+            });
+            const payload = await response.json();
+            const token = payload.data?.token;
+            if (!response.ok || !token)
+                throw new Error(payload.message || 'The instance could not issue an access token');
+            this.config.accessToken = token;
+            this.config.keyId = payload.data?.keyId;
+            this.channel = null;
+            this.authSession = {
+                ...this.authSession,
+                user: payload.data?.user || this.authSession?.user || '',
+                token,
+                keyId: payload.data?.keyId,
+                expiresAt: payload.data?.expiresAt,
+                instanceId,
+                relaySession,
+            };
+            await this.persistState();
+            this.diagnostic('info', 'auth.session.minted', 'Received a new access token from the instance');
+        })().finally(() => {
+            this.sessionMint = null;
+        });
+        await this.sessionMint;
     }
     /**
      * Runs `localCall` against the local Home Assistant instance first when it looks reachable,
      * falling back to `cloudCall` (the cloud relay) if the local attempt fails or isn't available.
+     * Both paths present the same instance-issued token.
      * Updates the transport mode reported by `getTransportMode()` to reflect whichever path served the request.
      */
     async withLocalFallback(action, localCall, cloudCall) {
-        await this.ensureLocalSession();
+        await this.ensureInstanceSession();
+        await this.ensureLocalReachable();
         if (this.shouldPreferLocal()) {
             try {
-                const result = await localCall(this.config.localBaseUrl, this.config.localAccessToken);
+                const result = await localCall();
                 this.activeTransport = 'local';
                 return result;
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : `Local ${action} failed`;
                 this.diagnostic('warn', 'transport.local.fallback', `Local ${action} failed (${message}); falling back to cloud relay`);
-                this.config.localAccessToken = undefined;
                 this.config.localUseLan = false;
                 await this.persistState();
-                await this.ensureLocalSession();
-                if (this.shouldPreferLocal()) {
-                    try {
-                        const result = await localCall(this.config.localBaseUrl, this.config.localAccessToken);
-                        this.activeTransport = 'local';
-                        return result;
-                    }
-                    catch (retryError) {
-                        const retryMessage = retryError instanceof Error ? retryError.message : `Local ${action} retry failed`;
-                        this.diagnostic('warn', 'transport.local.retry.failed', retryMessage);
-                    }
-                }
             }
         }
         const result = await cloudCall();
@@ -209,60 +325,47 @@ export class FluxClient {
         return await this.authenticate('/api/auth/login', { email: credentials.username.trim(), password: credentials.password, instance_id: credentials.instanceId }, 'login');
     }
     /**
-     * Signs in directly against a Home Assistant instance on the local network (e.g.
-     * `http://homeassistant.local:8080`) using the same username/password as the cloud
-     * account, and switches the client into LAN transport mode. Cloud relay sessions are
-     * not valid for local requests and vice versa, so this performs its own login call
-     * against the instance's local API.
+     * Points the client at a Home Assistant instance on the local network (e.g.
+     * `http://homeassistant.local:3589`) and switches into LAN transport mode. No sign-in is
+     * needed: the access token issued at cloud login is accepted by the instance directly.
      */
-    async loginLocal(baseUrl, credentials) {
-        const response = await this.fetchImpl(new URL('/api/auth/login', baseUrl), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: credentials.username.trim(), password: credentials.password }),
-        });
-        const payload = await response.json();
-        if (!response.ok || !payload.data?.token)
-            throw new Error(payload.message || 'Local sign-in failed');
+    async useLocalInstance(baseUrl) {
+        await this.ensureInstanceSession();
+        if (!this.secureChannel())
+            throw new Error('Sign in before connecting to the local instance');
+        const previousBaseUrl = this.config.localBaseUrl;
         this.config.localBaseUrl = baseUrl;
-        this.config.localAccessToken = payload.data.token;
-        this.config.localUseLan = true;
-        await this.persistState();
-        this.diagnostic('info', 'transport.local.login', `Signed in to local instance at ${baseUrl}`);
-    }
-    /**
-     * Exchanges the active cloud session for a short-lived local token through the authenticated
-     * relay tunnel. The token is then used only for requests directly to `baseUrl`.
-     */
-    async exchangeCloudSessionForLocal(baseUrl) {
-        const instanceId = this.config.instanceId?.trim();
-        const accessToken = this.authSession?.token || this.config.accessToken;
-        if (!instanceId || !accessToken)
-            throw new Error('Sign in to the cloud before connecting locally');
-        const response = await this.fetchImpl(new URL('/api/auth/local-session', this.relayUrl), {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${accessToken}`,
-                'x-instance-id': instanceId,
-            },
-        });
-        const payload = await response.json();
-        if (!response.ok || !payload.data?.token)
-            throw new Error(payload.message || 'Local session exchange failed');
-        this.config.localBaseUrl = baseUrl;
-        this.config.localAccessToken = payload.data.token;
+        try {
+            const result = await this.secureLocalRequest({ method: 'GET', path: '/api/auth/session' });
+            if (result.status >= 400)
+                throw new Error(`The local instance rejected the session (${result.status})`);
+        }
+        catch (error) {
+            this.config.localBaseUrl = previousBaseUrl;
+            throw error;
+        }
         this.config.localUseLan = true;
         this.activeTransport = 'local';
         await this.persistState();
-        this.diagnostic('info', 'transport.local.exchange', `Cloud session exchanged for a local token at ${baseUrl}`);
+        this.diagnostic('info', 'transport.local.ready', `Using the local instance at ${baseUrl}`);
     }
     async logout() {
         this.reconnectEnabled = false;
+        // Revoke the token at the instance so it cannot be replayed if it was captured on the LAN.
+        try {
+            if (this.accessToken())
+                await this.httpRequest('/api/auth/logout', 'POST');
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : 'Remote sign-out failed';
+            this.diagnostic('warn', 'auth.logout.remote.failed', message);
+        }
         this.authSession = null;
         this.config.accessToken = undefined;
-        this.config.localAccessToken = undefined;
+        this.config.keyId = undefined;
+        this.config.relaySession = undefined;
         this.config.localUseLan = false;
+        this.channel = null;
         this.activeTransport = 'relay';
         for (const pending of this.pending.values())
             pending.reject(new Error('Signed out'));
@@ -278,17 +381,23 @@ export class FluxClient {
         const response = await this.fetchImpl(new URL(path, this.relayUrl), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const payload = await response.json();
         const session = payload.data;
-        if (!response.ok || !session?.token || !session.instanceId)
+        if (!response.ok || !session?.instanceId)
             throw new Error(payload.message || `${action} failed`);
         this.config.instanceId = session.instanceId;
-        this.config.accessToken = session.token;
+        this.config.relaySession = session.relaySession;
+        this.config.accessToken = session.token || undefined;
+        this.config.keyId = session.keyId;
+        this.channel = null;
         this.authSession = session;
         await this.persistState();
-        return session;
+        // The instance may have been offline during login; retry so the caller ends up with a token.
+        if (!session.token)
+            await this.ensureInstanceSession();
+        return this.authSession;
     }
     async connect() {
         this.reconnectEnabled = true;
-        const hasCloudCredentials = Boolean(this.relayUrl.trim() && this.config.instanceId?.trim() && (this.authSession?.token || this.config.accessToken));
+        const hasCloudCredentials = Boolean(this.relayUrl.trim() && this.config.instanceId?.trim() && this.config.relaySession);
         if (!hasCloudCredentials) {
             if (this.hasLocalCredentials()) {
                 this.diagnostic('info', 'transport.local', 'No cloud session configured; using the local network instance only');
@@ -305,19 +414,12 @@ export class FluxClient {
         if (!relayUrl || !instanceId) {
             throw new Error('Relay URL and instance ID are required before connecting');
         }
-        const accessToken = this.authSession?.token || this.config.accessToken;
-        if (!accessToken)
-            throw new Error('Sign in before connecting to the relay');
         this.setState('connecting');
         let ticketResponse;
         try {
             ticketResponse = await this.fetchImpl(new URL('/api/auth/ws-ticket', relayUrl), {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${accessToken}`,
-                    'x-instance-id': this.config.instanceId,
-                },
+                headers: this.cloudHeaders({ 'Content-Type': 'application/json' }),
             });
         }
         catch (error) {
@@ -433,15 +535,13 @@ export class FluxClient {
         });
     }
     async httpRequest(path, method, body) {
-        return await this.withLocalFallback('request', async (baseUrl, token) => {
-            const response = await this.fetchImpl(new URL(path, baseUrl), { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body) });
-            const text = await response.text();
-            if (!response.ok)
-                throw new Error(text || `Request failed: ${response.status}`);
-            return text ? JSON.parse(text) : undefined;
-        }, async () => {
-            const token = this.authSession?.token || this.config.accessToken;
-            const response = await this.fetchImpl(new URL(path, this.relayUrl), { method, headers: { 'Content-Type': 'application/json', 'x-instance-id': this.config.instanceId, Authorization: `Bearer ${token || ''}` }, body: body === undefined ? undefined : JSON.stringify(body) });
+        return await this.withLocalFallback('request', async () => await this.secureLocalJson({
+            method,
+            path,
+            headers: { 'content-type': 'application/json' },
+            body: body === undefined ? undefined : new TextEncoder().encode(JSON.stringify(body)),
+        }), async () => {
+            const response = await this.fetchImpl(new URL(path, this.relayUrl), { method, headers: this.cloudHeaders({ 'Content-Type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });
             const text = await response.text();
             if (!response.ok)
                 throw new Error(text || `Request failed: ${response.status}`);
@@ -449,16 +549,12 @@ export class FluxClient {
         });
     }
     async search(params) {
-        return await this.withLocalFallback('search', async (baseUrl, token) => {
-            const url = new URL('/api/search', baseUrl);
-            url.searchParams.set('q', params.q);
-            url.searchParams.set('limit', String(params.limit ?? 20));
-            const response = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${token}` } });
-            if (!response.ok)
-                throw new Error(`Search failed: ${response.status}`);
-            return await response.json();
-        }, async () => {
-            const payload = await this.sendRelayRequest({ method: 'GET', path: '/api/search', query: { q: params.q, limit: String(params.limit ?? 20) }, headers: { Authorization: `Bearer ${this.authSession?.token || this.config.accessToken || ''}` } });
+        return await this.withLocalFallback('search', async () => await this.secureLocalJson({
+            method: 'GET',
+            path: '/api/search',
+            query: { q: params.q, limit: String(params.limit ?? 20) },
+        }), async () => {
+            const payload = await this.sendRelayRequest({ method: 'GET', path: '/api/search', query: { q: params.q, limit: String(params.limit ?? 20) }, headers: { Authorization: `Bearer ${this.accessToken() || ''}` } });
             if (!payload || payload.status >= 400)
                 throw new Error('Search failed');
             return (payload.body ?? payload.data ?? []);
@@ -475,22 +571,18 @@ export class FluxClient {
                 ? file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength)
                 : file));
         const bytes = new Uint8Array(arrayBuffer);
-        return await this.withLocalFallback('upload', async (baseUrl, token) => {
-            const url = new URL('/api/files/upload', baseUrl);
-            url.searchParams.set('path', uploadPath);
-            const form = new FormData();
-            form.append('file', bytesToBlob(bytes, getMimeType(fileName)), fileName);
-            const response = await this.fetchImpl(url, {
+        return await this.withLocalFallback('upload', async () => {
+            const multipart = buildMultipartBody('file', fileName, getMimeType(fileName), bytes);
+            const payload = await this.secureLocalJson({
                 method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
-                body: form,
+                path: '/api/files/upload',
+                query: { path: uploadPath },
+                headers: { 'content-type': multipart.contentType },
+                body: multipart.body,
             });
-            const payload = await response.json();
-            if (!response.ok)
-                throw new Error(payload.message || `Upload failed: ${response.status}`);
-            return { path: payload.data || uploadPath };
+            return { path: payload?.data || uploadPath };
         }, async () => {
-            const payload = await this.sendRelayRequest({ method: 'POST', path: '/api/files/upload', query: { path: uploadPath }, headers: { Authorization: `Bearer ${this.authSession?.token || this.config.accessToken || ''}` }, body: { file_name: fileName, content_b64: encodeBase64(bytes) } });
+            const payload = await this.sendRelayRequest({ method: 'POST', path: '/api/files/upload', query: { path: uploadPath }, headers: { Authorization: `Bearer ${this.accessToken() || ''}` }, body: { file_name: fileName, content_b64: encodeBase64(bytes) } });
             if (!payload || payload.status >= 400)
                 throw new Error('Upload failed');
             return (payload.body ?? payload.data ?? { path: uploadPath });
@@ -521,21 +613,22 @@ export class FluxClient {
             }
             return new Blob([rawText], { type: contentType });
         };
-        return await this.withLocalFallback('download', async (baseUrl, token) => {
-            const url = new URL('/api/files/download', baseUrl);
-            url.searchParams.set('path', path);
-            if (options.user)
-                url.searchParams.set('user', options.user);
-            const response = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${token}` } });
-            return await parseDownload(response);
+        return await this.withLocalFallback('download', async () => {
+            const result = await this.secureLocalRequest({
+                method: 'GET',
+                path: '/api/files/download',
+                query: { path, ...(options.user ? { user: options.user } : {}) },
+            });
+            if (result.status >= 400)
+                throw new Error(`Download failed: ${result.status}`);
+            return bytesToBlob(result.body, result.headers['content-type'] || 'application/octet-stream');
         }, async () => {
-            const token = this.authSession?.token || this.config.accessToken;
             const url = new URL('/api/files/download', this.relayUrl);
             url.searchParams.set('instance_id', this.config.instanceId);
             url.searchParams.set('path', path);
             if (options.user)
                 url.searchParams.set('user', options.user);
-            const response = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${token || ''}` } });
+            const response = await this.fetchImpl(url, { headers: this.cloudHeaders() });
             return await parseDownload(response);
         });
     }
@@ -558,43 +651,128 @@ export class FluxClient {
             const bytes = new Uint8Array(await response.arrayBuffer());
             return `data:${contentType || 'application/octet-stream'};base64,${encodeBase64(bytes)}`;
         };
-        return await this.withLocalFallback('download', async (baseUrl, token) => {
-            const url = new URL('/api/files/download', baseUrl);
-            url.searchParams.set('path', path);
-            if (options.user)
-                url.searchParams.set('user', options.user);
-            const response = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${token}` } });
-            return await parseDataUri(response);
+        return await this.withLocalFallback('download', async () => {
+            const result = await this.secureLocalRequest({
+                method: 'GET',
+                path: '/api/files/download',
+                query: { path, ...(options.user ? { user: options.user } : {}) },
+            });
+            if (result.status >= 400)
+                throw new Error(`Download failed: ${result.status}`);
+            const contentType = result.headers['content-type'] || 'application/octet-stream';
+            return `data:${contentType};base64,${encodeBase64(result.body)}`;
         }, async () => {
-            const token = this.authSession?.token || this.config.accessToken;
             const url = new URL('/api/files/download', this.relayUrl);
             url.searchParams.set('instance_id', this.config.instanceId);
             url.searchParams.set('path', path);
             if (options.user)
                 url.searchParams.set('user', options.user);
-            const response = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${token || ''}` } });
+            const response = await this.fetchImpl(url, { headers: this.cloudHeaders() });
             return await parseDataUri(response);
         });
     }
+    /** Lists files and folders in a directory relative to the signed-in user's workspace (e.g. `/Notes`). */
+    async listFiles(path = '/', options = {}) {
+        const query = { path, recursive: String(options.recursive ?? false) };
+        if (options.limit !== undefined)
+            query.limit = String(options.limit);
+        return await this.withLocalFallback('list', async () => {
+            const payload = await this.secureLocalJson({ method: 'GET', path: '/api/files/list', query });
+            if (!payload?.data)
+                throw new Error(payload?.message || 'List failed');
+            return payload.data;
+        }, async () => {
+            const payload = await this.sendRelayRequest({ method: 'GET', path: '/api/files/list', query, headers: { Authorization: `Bearer ${this.accessToken() || ''}` } });
+            if (!payload || payload.status >= 400 || !payload.data)
+                throw new Error('List failed');
+            return payload.data;
+        });
+    }
     async deleteFile(path) {
-        return await this.withLocalFallback('delete', async (baseUrl, token) => {
-            const url = new URL('/api/files', baseUrl);
-            url.searchParams.set('path', path);
-            const response = await this.fetchImpl(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-            if (!response.ok)
-                throw new Error(`Delete failed: ${response.status}`);
+        return await this.withLocalFallback('delete', async () => {
+            const result = await this.secureLocalRequest({ method: 'DELETE', path: '/api/files', query: { path } });
+            if (result.status >= 400)
+                throw new Error(`Delete failed: ${result.status}`);
         }, async () => {
             const payload = await this.sendRelayRequest({
                 method: 'DELETE',
                 path: '/api/files',
                 query: { path },
-                headers: { Authorization: `Bearer ${this.authSession?.token || this.config.accessToken || ''}` },
+                headers: { Authorization: `Bearer ${this.accessToken() || ''}` },
             });
             if (!payload || payload.status >= 400)
                 throw new Error('Delete failed');
         });
     }
     async getConfig() { return await this.httpRequest('/api/config', 'GET'); }
+    /** Calls a `/api/faces/*` endpoint and unwraps its `{ success, message, data }` response. */
+    async facesRequest(method, route, query, body) {
+        const path = `/api/faces/${route}`;
+        const unwrap = (status, payload) => {
+            if (status >= 400 || !payload?.success)
+                throw new Error(payload?.message || `Face request failed (${status})`);
+            return payload.data;
+        };
+        return await this.withLocalFallback('faces', async () => {
+            const result = await this.secureLocalRequest({
+                method,
+                path,
+                query,
+                headers: { 'content-type': 'application/json' },
+                body: body === undefined ? undefined : new TextEncoder().encode(JSON.stringify(body)),
+            });
+            const text = new TextDecoder().decode(result.body);
+            return unwrap(result.status, safeJsonParse(text));
+        }, async () => {
+            const payload = await this.sendRelayRequest({ method, path, query, body, headers: { Authorization: `Bearer ${this.accessToken() || ''}` } });
+            if (!payload)
+                throw new Error('Face request failed');
+            return unwrap(payload.status, payload.body ?? payload.data);
+        });
+    }
+    /** People found in the signed-in user's photos: labelled people first, then by photo count. */
+    async listPeople() {
+        return await this.facesRequest('GET', 'people');
+    }
+    async getPerson(personId) {
+        return await this.facesRequest('GET', 'person', { id: personId });
+    }
+    async getPhotoFaces(path) {
+        return await this.facesRequest('GET', 'photo', { path });
+    }
+    /** Pairs of people that look alike, most similar first. */
+    async getFaceSuggestions(limit = 20) {
+        return await this.facesRequest('GET', 'suggestions', { limit: String(limit) });
+    }
+    /** The user's flux-people contacts, for labelling people. */
+    async listFaceContacts() {
+        return await this.facesRequest('GET', 'contacts');
+    }
+    /**
+     * Names a person, optionally linking a contact. Another person already carrying the same
+     * contact (or name) is merged in. Pass empty values to clear the label.
+     */
+    async labelPerson(personId, label) {
+        const result = await this.facesRequest('POST', 'label', undefined, {
+            person_id: personId,
+            name: label.name ?? null,
+            contact_id: label.contactId ?? null,
+        });
+        return result.person_id;
+    }
+    /** Confirms that `sourceIds` are the same person as `targetId`. */
+    async mergePeople(targetId, sourceIds) {
+        await this.facesRequest('POST', 'merge', undefined, { target_id: targetId, source_ids: sourceIds });
+    }
+    /** Records that two people are different, so they're no longer suggested. */
+    async rejectFaceSuggestion(personA, personB) {
+        await this.facesRequest('POST', 'reject', undefined, { person_a: personA, person_b: personB });
+    }
+    /** Moves a face to another person, or into a new person of its own when `personId` is null. */
+    async assignFace(faceId, personId) {
+        const result = await this.facesRequest('POST', 'assign', undefined, { face_id: faceId, person_id: personId });
+        return result.person_id;
+    }
     async disconnect() {
         this.reconnectEnabled = false;
         if (this.socket) {

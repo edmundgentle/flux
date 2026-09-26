@@ -69,7 +69,7 @@ ENV MODELS_DIR=/app/models
 
 
 # Expose port
-EXPOSE 8080
+EXPOSE 3589
 
 # Environment variables
 ENV RUST_LOG=info

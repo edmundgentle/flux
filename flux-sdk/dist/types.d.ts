@@ -68,6 +68,56 @@ export type SearchRequest = {
     limit?: number;
     user?: string;
 };
+/** Face bounding box, normalized to 0..1 of the upright image. */
+export type FaceBox = {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+};
+export type FaceRef = {
+    id: string;
+    /** Absolute instance path of the photo; pass to `downloadFile`. */
+    path: string;
+    box: FaceBox;
+    /** Upright pixel dimensions of the photo. */
+    image_width: number;
+    image_height: number;
+    date_created: number;
+};
+/** An automatically grouped person. Unlabelled groups have a `null` name. */
+export type FacePerson = {
+    id: string;
+    name: string | null;
+    /** flux-people contact id, when labelled against a contact. */
+    contact_id: string | null;
+    face_count: number;
+    photo_count: number;
+    cover: FaceRef | null;
+};
+export type FacePersonDetail = FacePerson & {
+    /** Newest photo first. */
+    faces: FaceRef[];
+};
+export type PhotoFace = FaceRef & {
+    person_id: string;
+    person_name: string | null;
+};
+/** "Are these the same person?" - `person_b` is the labelled one when either is. */
+export type FaceSuggestion = {
+    person_a: FacePerson;
+    person_b: FacePerson;
+    similarity: number;
+};
+export type FaceContact = {
+    id: string;
+    name: string;
+    path: string;
+};
+export type FaceLabel = {
+    name?: string | null;
+    contactId?: string | null;
+};
 export type UploadProgress = {
     loaded: number;
     total: number;
@@ -94,9 +144,13 @@ export type FeatureConfig = {
     relayUrl?: string;
     instanceId: string;
     instanceToken?: string;
+    /** Access token issued by the Home Assistant instance. Authorizes data access on both transports. */
     accessToken?: string;
+    /** Public id of the envelope key derived from `accessToken`, used for LAN requests. */
+    keyId?: string;
+    /** Cloud-issued session that admits requests to the relay. Never grants access to instance data. */
+    relaySession?: string;
     localBaseUrl?: string;
-    localAccessToken?: string;
     localUseLan?: boolean;
     websocketCtor?: new (url: string, protocols?: string | string[]) => WebSocketLike;
     fetchImpl?: typeof fetch;
@@ -121,7 +175,13 @@ export type AuthInstance = {
 };
 export type AuthSession = {
     user: string;
+    /** Issued by the Home Assistant instance; used for LAN and relayed requests alike. */
     token: string;
+    /** Public id of the envelope key derived from `token`. */
+    keyId?: string;
+    /** Cloud session used solely to admit requests to the relay. */
+    relaySession?: string;
+    expiresAt?: string;
     instanceId: string;
     tunnelToken?: string;
     label?: string;
@@ -156,4 +216,28 @@ export type FileUploadOptions = {
 export type DownloadOptions = {
     user?: string;
     onProgress?: (received: number, total?: number) => void;
+};
+export type ListFilesOptions = {
+    /** Include the contents of subdirectories. */
+    recursive?: boolean;
+    /** Maximum entries to return; the instance caps this at 5000. */
+    limit?: number;
+};
+export type FileEntry = {
+    name: string;
+    /** Absolute instance path; pass to `downloadFile` / `deleteFile`. */
+    path: string;
+    /** Path relative to the user's workspace, e.g. `/Notes/note_1.md`. */
+    relative_path: string;
+    is_dir: boolean;
+    size: number;
+    /** Last modification time in Unix milliseconds. */
+    modified_at: number | null;
+};
+export type DirectoryListing = {
+    path: string;
+    recursive: boolean;
+    entries: FileEntry[];
+    /** True when the entry limit was hit and the listing is incomplete. */
+    truncated: boolean;
 };

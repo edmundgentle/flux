@@ -57,6 +57,17 @@ function splitMasonryColumns(notes: NoteItem[]): [NoteItem[], NoteItem[]] {
   return columns;
 }
 
+function createNoteFilename(title: string, id: string): string {
+  const slug = title.trim().toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 64)
+    .replace(/-+$/g, '');
+  return `${slug || 'untitled'}-${id}.md`;
+}
+
 export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Props) {
   const insets = useSafeAreaInsets();
   const [connectionState, setConnectionState] = useState(client.getState());
@@ -122,32 +133,58 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
     try {
       await client.connect();
 
-      // Query Tantivy via Flux SDK search API
-      const searchResults: SearchResult[] = await client.search({
-        q: searchQuery.trim(),
-        limit: 200,
-      });
+      let loadedNotes: NoteItem[];
+      let complete: boolean;
+      if (!searchQuery.trim()) {
+        // List the whole Notes directory so deletions are detected, and only download notes
+        // whose server modification time differs from the cached copy.
+        const listing = await client.listFiles('/Notes');
+        const noteFiles = listing.entries.filter((entry) => !entry.is_dir && entry.name.endsWith('.md'));
+        const cachedByPath = new Map(cachedNotes.map((note) => [note.path, note]));
+        const results = await Promise.all(
+          noteFiles.map(async (entry) => {
+            const cached = cachedByPath.get(entry.path);
+            if (cached && entry.modified_at !== null && cached.serverModifiedAt === entry.modified_at) return cached;
+            try {
+              const text = await (await client.downloadFile(entry.path)).text();
+              const parsed = parseNoteMarkdown(text, entry.path, entry.modified_at ? entry.modified_at / 1000 : undefined);
+              return { ...parsed, serverModifiedAt: entry.modified_at ?? undefined };
+            } catch {
+              return null;
+            }
+          })
+        );
+        loadedNotes = results.filter((note): note is NoteItem => note !== null);
+        complete = !listing.truncated && loadedNotes.length === noteFiles.length;
+      } else {
+        // Query Tantivy via Flux SDK search API
+        const searchResults: SearchResult[] = await client.search({
+          q: searchQuery.trim(),
+          limit: 200,
+        });
 
-      // Filter results for notes directory or .md files
-      const noteFiles = searchResults.filter(
-        (res) => res.path.includes('/Notes/') || res.path.endsWith('.md') || res.tags.includes('md')
-      );
+        // Filter results for notes directory or .md files
+        const noteFiles = searchResults.filter(
+          (res) => res.path.includes('/Notes/') || res.path.endsWith('.md') || res.tags.includes('md')
+        );
 
-      // Fetch file content for each note
-      const results = await Promise.all(
-        noteFiles.map(async (fileRes) => {
-          try {
-            // Download raw Markdown text
-            const blob = await client.downloadFile(fileRes.path);
-            const text = await blob.text();
-            return parseNoteMarkdown(text, fileRes.path, fileRes.date_created);
-          } catch (downloadErr) {
-            // Previews are often truncated; do not manufacture a corrupt note.
-            return null;
-          }
-        })
-      );
-      const loadedNotes = results.filter((note): note is NoteItem => note !== null);
+        // Fetch file content for each note
+        const results = await Promise.all(
+          noteFiles.map(async (fileRes) => {
+            try {
+              // Download raw Markdown text
+              const blob = await client.downloadFile(fileRes.path);
+              const text = await blob.text();
+              return parseNoteMarkdown(text, fileRes.path, fileRes.date_created);
+            } catch (downloadErr) {
+              // Previews are often truncated; do not manufacture a corrupt note.
+              return null;
+            }
+          })
+        );
+        loadedNotes = results.filter((note): note is NoteItem => note !== null);
+        complete = loadedNotes.length === noteFiles.length;
+      }
 
       // Sort notes: pinned first, then by updatedAt / createdAt descending
       const sorted = loadedNotes.sort((a, b) => {
@@ -155,7 +192,7 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
         return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt);
       });
 
-      if (!searchQuery.trim() && loadedNotes.length === noteFiles.length) {
+      if (!searchQuery.trim() && complete) {
         await saveCachedNotes(sorted);
         setCachedNotes(sorted);
         setNotes(sorted);
@@ -213,22 +250,29 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
     const isNew = !noteData.path;
     const timestamp = Date.now();
     const cleanId = noteData.id || `note_${timestamp}_${Math.random().toString(36).substring(2, 6)}`;
-    const filename = `${cleanId}.md`;
+    const filename = isNew
+      ? createNoteFilename(noteData.title, cleanId)
+      : noteData.path!.split('/').pop() || createNoteFilename(noteData.title, cleanId);
     const filePath = isNew ? `Notes/${filename}` : noteData.path!;
+    const noteDirectory = filePath.slice(0, filePath.lastIndexOf('/')) || '/Notes';
+    const uploadDirectory = noteDirectory.startsWith('/') ? noteDirectory : `/${noteDirectory}`;
+    const filenameStem = filename.replace(/\.md$/i, '');
 
     let attachments = noteData.attachments || [];
     let content = noteData.content || '';
-    try {
-      attachments = await Promise.all(attachments.map(async (attachment) => {
-        if (!attachment.uri.startsWith('file:') && !attachment.uri.startsWith('content:')) return attachment;
-        const blob = await (await fetch(attachment.uri)).blob();
-        const uploaded = await client.uploadFile(blob, { directory: `/Notes/${cleanId}`, path: attachment.name });
-        content = content.split(attachment.uri).join(uploaded.path);
-        return { ...attachment, uri: uploaded.path };
-      }));
-    } catch (error) {
-      console.warn('Some attachments will remain local until the next save:', error);
-    }
+    attachments = await Promise.all(attachments.map(async (attachment) => {
+      if (!attachment.uri.startsWith('file:') && !attachment.uri.startsWith('content:')) return attachment;
+      const blob = await (await fetch(attachment.uri)).blob();
+      const sourceName = attachment.name.split(/[\\/]/).pop() || 'attachment';
+      const safeName = sourceName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'attachment';
+      const safeId = attachment.id.replace(/[^a-zA-Z0-9_-]+/g, '-') || 'attachment';
+      const uploaded = await client.uploadFile(blob, {
+        directory: uploadDirectory,
+        path: `${filenameStem}-${safeId}-${safeName}`,
+      });
+      content = content.split(attachment.uri).join(uploaded.path);
+      return { ...attachment, uri: uploaded.path };
+    }));
 
     const markdownString = serializeNoteMarkdown({ ...noteData, content, attachments, id: cleanId, path: filePath });
 
@@ -247,7 +291,7 @@ export default function MainNotesScreen({ client, diagnostics, onLoggedOut }: Pr
     setNotes(searchCachedNotes(updatedCache, query));
 
     try {
-      await client.uploadFile(bytes, { directory: '/Notes', path: filename });
+      await client.uploadFile(bytes, { directory: uploadDirectory, path: filename });
     } catch (error) {
       console.warn('Saved note locally; upload will retry on the next sync:', error);
     }

@@ -54,6 +54,8 @@ export function getMimeType(fileName) {
             return 'application/pdf';
         case 'txt':
             return 'text/plain';
+        case 'vcf':
+            return 'text/vcard';
         case 'json':
             return 'application/json';
         default:

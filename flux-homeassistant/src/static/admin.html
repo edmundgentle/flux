@@ -15,6 +15,7 @@
     --accent: #3b82f6;
     --ok: #22c55e;
     --bad: #ef4444;
+    --free: #252a34;
   }
   * { box-sizing: border-box; }
   body {
@@ -75,6 +76,7 @@
   }
   button:disabled { opacity: 0.5; cursor: default; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .table-wrap { overflow-x: auto; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: 500; }
   tr.user-row:hover { background: rgba(255,255,255,0.02); }
@@ -91,6 +93,26 @@
   .error { color: var(--bad); font-size: 13px; margin-top: 8px; }
   .muted { color: var(--muted); font-size: 13px; }
   .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .storage-location { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin: 10px 0 4px; }
+  .storage-location input { width: 100%; }
+  .status { color: var(--ok); font-size: 13px; margin-top: 8px; }
+  .storage-summary { margin: 16px 0 20px; }
+  .storage-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; font-size: 13px; }
+  .storage-bar { display: flex; width: 100%; height: 14px; overflow: hidden; background: var(--free); border: 1px solid var(--border); border-radius: 4px; }
+  .storage-segment { min-width: 0; height: 100%; }
+  .storage-segment + .storage-segment { border-left: 1px solid rgba(15, 17, 21, 0.55); }
+  .storage-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 2px; }
+  .member-storage { min-width: 260px; }
+  .member-storage .storage-heading { margin-bottom: 5px; }
+  .member-storage .storage-bar { height: 10px; }
+  .member-storage .storage-legend { gap: 4px 10px; margin-top: 5px; }
+  @media (max-width: 700px) {
+    main { padding: 16px; }
+    .storage-location { grid-template-columns: 1fr; }
+    .member-storage { min-width: 220px; }
+  }
 </style>
 </head>
 <body>
@@ -109,16 +131,29 @@
     </div>
     <div class="error" id="instance-name-error"></div>
 
-    <div id="instance-storage-info"></div>
+    <div id="instance-storage-info" class="storage-summary"></div>
+    <div class="toolbar" style="margin-top:16px; margin-bottom:0;">
+      <strong>Storage location</strong>
+    </div>
+    <div class="storage-location">
+      <input type="text" id="storage-path-input" list="storage-path-options" placeholder="/share/flux" aria-label="Storage location" />
+      <datalist id="storage-path-options"></datalist>
+      <button id="storage-move-btn">Move files</button>
+    </div>
+    <div class="muted">Choose a folder under /share or /media to store files outside the add-on container.</div>
+    <div class="status" id="storage-status"></div>
+    <div class="error" id="storage-error"></div>
     <div class="toolbar" style="margin-top:16px;">
       <strong>Users</strong>
     </div>
-    <table>
-      <thead>
-        <tr><th>Email</th><th>Status</th><th>Invited</th><th>Storage Used</th><th></th></tr>
-      </thead>
-      <tbody id="members-body"></tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Email</th><th>Status</th><th>Invited</th><th>Storage Used</th><th></th></tr>
+        </thead>
+        <tbody id="members-body"></tbody>
+      </table>
+    </div>
     <div class="toolbar" style="margin-top:10px;">
       <input type="text" id="invite-email-input" placeholder="Email address" size="30" />
       <button id="invite-btn">Add / Invite</button>
@@ -137,9 +172,16 @@
   const instanceNameInput = el('instance-name-input');
   const instanceNameError = el('instance-name-error');
   const instanceStorageInfo = el('instance-storage-info');
+  const storagePathInput = el('storage-path-input');
+  const storagePathOptions = el('storage-path-options');
+  const storageMoveBtn = el('storage-move-btn');
+  const storageStatus = el('storage-status');
+  const storageError = el('storage-error');
   const membersBody = el('members-body');
   const membersError = el('members-error');
   const inviteEmailInput = el('invite-email-input');
+  const categoryColors = ['#3b82f6', '#22c55e', '#eab308', '#f97316', '#ec4899', '#14b8a6', '#8b5cf6'];
+  const memberColors = ['#2563eb', '#16a34a', '#d97706', '#db2777', '#0891b2', '#7c3aed', '#dc2626'];
 
   function setCloudStatus(connected) {
     cloudDot.className = 'dot ' + (connected ? 'ok' : 'bad');
@@ -229,6 +271,98 @@
     return isNaN(date.getTime()) ? value : date.toLocaleString();
   }
 
+  function appendStorageBar(container, segments, totalBytes, options) {
+    const bar = document.createElement('div');
+    bar.className = 'storage-bar';
+    bar.setAttribute('role', 'img');
+    bar.setAttribute('aria-label', options.ariaLabel);
+
+    const legend = document.createElement('div');
+    legend.className = 'storage-legend';
+    for (const segment of segments) {
+      const percentage = totalBytes > 0 ? (segment.bytes / totalBytes) * 100 : 0;
+      if (percentage > 0) {
+        const part = document.createElement('span');
+        part.className = 'storage-segment';
+        part.style.width = percentage + '%';
+        part.style.background = segment.color;
+        part.title = segment.label + ': ' + percentage.toFixed(1) + '% (' + formatSize(segment.bytes) + ')';
+        bar.appendChild(part);
+      }
+
+      const item = document.createElement('span');
+      item.className = 'legend-item';
+      const swatch = document.createElement('span');
+      swatch.className = 'legend-swatch';
+      swatch.style.background = segment.color;
+      const text = document.createElement('span');
+      text.textContent = segment.label + ' ' + percentage.toFixed(1) + '%';
+      item.appendChild(swatch);
+      item.appendChild(text);
+      legend.appendChild(item);
+    }
+    container.appendChild(bar);
+    container.appendChild(legend);
+  }
+
+  function renderGlobalStorage(data) {
+    instanceStorageInfo.innerHTML = '';
+    const totalBytes = data.total_storage_bytes || 0;
+    const availableBytes = Math.min(data.available_storage_bytes || 0, totalBytes);
+    const members = data.members || [];
+    const memberBytes = members.reduce((sum, member) => sum + (member.storage_bytes || 0), 0);
+    const deviceUsedBytes = Math.min(data.used_storage_bytes || memberBytes, totalBytes);
+    const otherUsedBytes = Math.max(0, deviceUsedBytes - memberBytes);
+
+    const heading = document.createElement('div');
+    heading.className = 'storage-heading';
+    heading.innerHTML = '<strong>Device storage</strong><span class="muted">' +
+      escapeHtml(formatSize(deviceUsedBytes)) + ' used of ' + escapeHtml(formatSize(totalBytes)) + '</span>';
+    instanceStorageInfo.appendChild(heading);
+
+    const segments = members
+      .filter((member) => (member.storage_bytes || 0) > 0)
+      .map((member, index) => ({
+        label: member.email,
+        bytes: member.storage_bytes || 0,
+        color: memberColors[index % memberColors.length],
+      }));
+    if (otherUsedBytes > 0) {
+      segments.push({ label: 'Other used', bytes: otherUsedBytes, color: '#6b7280' });
+    }
+    segments.push({ label: 'Available', bytes: availableBytes, color: 'var(--free)' });
+    appendStorageBar(instanceStorageInfo, segments, totalBytes, {
+      ariaLabel: formatSize(deviceUsedBytes) + ' used and ' + formatSize(availableBytes) + ' available',
+    });
+  }
+
+  function createMemberStorage(member) {
+    const container = document.createElement('div');
+    container.className = 'member-storage';
+    const totalBytes = member.storage_bytes || 0;
+    const heading = document.createElement('div');
+    heading.className = 'storage-heading';
+    heading.innerHTML = '<span>' + escapeHtml(formatSize(totalBytes)) + '</span><span class="muted">100%</span>';
+    container.appendChild(heading);
+
+    const categories = (member.storage_categories || []).map((category, index) => ({
+      label: category.name,
+      bytes: category.storage_bytes || 0,
+      color: categoryColors[index % categoryColors.length],
+    }));
+    if (categories.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'muted';
+      empty.textContent = 'No folder data';
+      container.appendChild(empty);
+      return container;
+    }
+    appendStorageBar(container, categories, totalBytes, {
+      ariaLabel: member.email + ' storage by top-level folder',
+    });
+    return container;
+  }
+
   function escapeHtml(value) {
     return String(value)
       .replace(/&/g, '&amp;')
@@ -247,7 +381,14 @@
       }
       instanceNameHeader.textContent = body.data.label ? ('— ' + body.data.label) : '';
       instanceNameInput.value = body.data.label || '';
-      instanceStorageInfo.textContent = formatSize(body.data.total_storage_bytes || 0) + " (" + formatSize(body.data.available_storage_bytes || 0) + " free)";
+      storagePathInput.value = body.data.data_dir || '';
+      storagePathOptions.innerHTML = '';
+      for (const root of body.data.storage_roots || []) {
+        const option = document.createElement('option');
+        option.value = root === '/config' ? '/config/search_vision' : root + '/flux';
+        storagePathOptions.appendChild(option);
+      }
+      renderGlobalStorage(body.data);
       renderMembers(body.data.members || []);
       setCloudStatus(body.data.bridge_connected);
     } catch (err) {
@@ -263,8 +404,9 @@
         '<td>' + escapeHtml(member.email) + '</td>' +
         '<td>' + (member.joined ? 'Joined' : 'Invited (pending)') + '</td>' +
         '<td>' + escapeHtml(formatDate(member.invitedAt)) + '</td>'+
-        '<td>' + escapeHtml(formatSize(member.storage_bytes || 0)) + '</td>'+
+        '<td class="storage-cell"></td>'+
         '<td><button class="secondary browse-btn">Browse Files</button></td>';
+      row.querySelector('.storage-cell').appendChild(createMemberStorage(member));
       membersBody.appendChild(row);
 
       const browserRow = document.createElement('tr');
@@ -309,6 +451,37 @@
       instanceNameHeader.textContent = body.data.label ? ('— ' + body.data.label) : '';
     } catch (err) {
       instanceNameError.textContent = err.message;
+    }
+  });
+
+  storageMoveBtn.addEventListener('click', async () => {
+    storageError.textContent = '';
+    storageStatus.textContent = '';
+    const path = storagePathInput.value.trim();
+    if (!path || !window.confirm('Move all Flux files to ' + path + '? Flux will restart when the move finishes.')) {
+      return;
+    }
+
+    storageMoveBtn.disabled = true;
+    storagePathInput.disabled = true;
+    storageStatus.textContent = 'Moving files...';
+    try {
+      const res = await fetch('api/admin/storage', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.success) {
+        throw new Error(body.message || ('Request failed with status ' + res.status));
+      }
+      storageStatus.textContent = body.message;
+      window.setTimeout(() => window.location.reload(), 4000);
+    } catch (err) {
+      storageStatus.textContent = '';
+      storageError.textContent = err.message;
+      storageMoveBtn.disabled = false;
+      storagePathInput.disabled = false;
     }
   });
 

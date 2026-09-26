@@ -8,7 +8,7 @@ export async function getCachedContacts(): Promise<ContactItem[]> {
     const raw = await AsyncStorage.getItem(CACHE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter((contact) => typeof contact?.path === 'string' && /\.vcf$/i.test(contact.path)) : [];
   } catch {
     return [];
   }

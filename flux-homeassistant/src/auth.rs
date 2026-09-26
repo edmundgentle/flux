@@ -1,11 +1,10 @@
-use bcrypt::{hash, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use tracing::{warn};
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,8 +20,19 @@ pub struct Account {
 pub struct Session {
     pub username: String,
     pub token_hash: String,
+    /// Public identifier sent in the clear so the server can select a key before decrypting.
+    #[serde(default)]
+    pub key_id: String,
+    /// The access token itself. Symmetric envelope crypto needs the real secret at both ends,
+    /// so unlike a bearer-only design this file holds usable key material.
+    #[serde(default)]
+    pub secret: String,
     pub created_at: String,
     pub expires_at: String,
+    #[serde(default)]
+    pub replay_high: u64,
+    #[serde(default)]
+    pub replay_mask: u64,
 }
 
 #[derive(Deserialize)]
@@ -30,15 +40,31 @@ struct StoredSession {
     username: String,
     token_hash: Option<String>,
     token: Option<String>,
+    #[serde(default)]
+    key_id: Option<String>,
+    #[serde(default)]
+    secret: Option<String>,
     created_at: String,
     expires_at: String,
+    #[serde(default)]
+    replay_high: u64,
+    #[serde(default)]
+    replay_mask: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub user: String,
     pub token: String,
+    pub key_id: String,
+    pub expires_at: String,
 }
+
+/// How long an access token issued by this instance stays valid. The same token is used for
+/// LAN requests and for requests relayed through the cloud, so it outlives a single app session.
+const SESSION_TTL_DAYS: i64 = 30;
+
+const SESSION_PERSIST_INTERVAL_MS: i64 = 2_000;
 
 #[derive(Clone)]
 pub struct AccountManager {
@@ -47,6 +73,7 @@ pub struct AccountManager {
     sessions_path: PathBuf,
     accounts: Arc<RwLock<HashMap<String, Account>>>,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
+    sessions_persisted_at: Arc<RwLock<i64>>,
 }
 
 impl AccountManager {
@@ -68,9 +95,15 @@ impl AccountManager {
                             accounts.insert(account.username.clone(), account);
                         }
                     }
-                    Err(e) => warn!("Failed to parse accounts.json: {}. Using empty account registry.", e),
+                    Err(e) => warn!(
+                        "Failed to parse accounts.json: {}. Using empty account registry.",
+                        e
+                    ),
                 },
-                Err(e) => warn!("Failed to read accounts.json: {}. Using empty account registry.", e),
+                Err(e) => warn!(
+                    "Failed to read accounts.json: {}. Using empty account registry.",
+                    e
+                ),
             }
         }
 
@@ -92,15 +125,27 @@ impl AccountManager {
                             let session = Session {
                                 username: stored.username,
                                 token_hash: token_hash.clone(),
+                                key_id: stored.key_id.unwrap_or_default(),
+                                secret: stored.secret.unwrap_or_default(),
                                 created_at: stored.created_at,
                                 expires_at: stored.expires_at,
+                                // Requests accepted just before shutdown may not have been
+                                // persisted, so skip past them rather than risk a replay.
+                                replay_high: stored.replay_high + crate::secure::REPLAY_RESTART_MARGIN,
+                                replay_mask: stored.replay_mask,
                             };
                             sessions.insert(token_hash, session);
                         }
                     }
-                    Err(e) => warn!("Failed to parse sessions.json: {}. Using empty session registry.", e),
+                    Err(e) => warn!(
+                        "Failed to parse sessions.json: {}. Using empty session registry.",
+                        e
+                    ),
                 },
-                Err(e) => warn!("Failed to read sessions.json: {}. Using empty session registry.", e),
+                Err(e) => warn!(
+                    "Failed to read sessions.json: {}. Using empty session registry.",
+                    e
+                ),
             }
         }
 
@@ -110,6 +155,7 @@ impl AccountManager {
             sessions_path,
             accounts: Arc::new(RwLock::new(accounts)),
             sessions: Arc::new(RwLock::new(sessions)),
+            sessions_persisted_at: Arc::new(RwLock::new(0)),
         };
         if migrated_plaintext_sessions {
             let _ = manager.save_sessions();
@@ -155,10 +201,6 @@ impl AccountManager {
         username.trim().to_lowercase()
     }
 
-    fn hash_password(password: &str) -> Result<String, String> {
-        hash(password, DEFAULT_COST).map_err(|e| format!("Failed to hash password: {}", e))
-    }
-
     fn hash_token(token: &str) -> String {
         let digest = Sha256::digest(token.as_bytes());
         format!("{digest:x}")
@@ -176,37 +218,133 @@ impl AccountManager {
         Ok(())
     }
 
-    pub fn create_cloud_session(&self, username: &str) -> Result<LoginResponse, String> {
+    /// Issues an access token for a user whose password was verified by the cloud and asserted
+    /// over the signed relay tunnel. The token this returns is the only credential that grants
+    /// access to instance data, on the LAN and through the relay alike.
+    pub fn create_federated_session(
+        &self,
+        username: &str,
+        display_name: Option<&str>,
+    ) -> Result<LoginResponse, String> {
         let normalized = Self::normalize_username(username);
+        if normalized.is_empty() {
+            return Err("A username is required to create a session".to_string());
+        }
         {
             let mut accounts_guard = self.accounts.write().unwrap();
-            if !accounts_guard.contains_key(&normalized) {
-                let account = Account {
+            let account = accounts_guard
+                .entry(normalized.clone())
+                .or_insert_with(|| Account {
                     username: normalized.clone(),
-                    password_hash: Self::hash_password(&Uuid::new_v4().to_string())?,
+                    // Passwords are verified by the cloud, never here, so no usable local password exists.
+                    password_hash: String::new(),
                     display_name: None,
                     role: "user".to_string(),
                     created_at: chrono::Utc::now().to_rfc3339(),
-                };
-                accounts_guard.insert(normalized.clone(), account);
+                });
+            if let Some(label) = display_name
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                account.display_name = Some(label.to_string());
             }
         }
         self.ensure_user_workspace(&normalized)?;
         self.save_accounts()?;
 
         let token = Uuid::new_v4().to_string();
+        let key_id = Uuid::new_v4().simple().to_string();
+        let expires_at =
+            (chrono::Utc::now() + chrono::Duration::days(SESSION_TTL_DAYS)).to_rfc3339();
         let session = Session {
             username: normalized.clone(),
             token_hash: Self::hash_token(&token),
+            key_id: key_id.clone(),
+            secret: token.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: (chrono::Utc::now() + chrono::Duration::minutes(15)).to_rfc3339(),
+            expires_at: expires_at.clone(),
+            replay_high: 0,
+            replay_mask: 0,
         };
         {
             let mut sessions_guard = self.sessions.write().unwrap();
             sessions_guard.insert(session.token_hash.clone(), session);
         }
         self.save_sessions()?;
-        Ok(LoginResponse { user: normalized, token })
+        Ok(LoginResponse {
+            user: normalized,
+            token,
+            key_id,
+            expires_at,
+        })
+    }
+
+    /// Resolves the session behind an envelope's key id, returning the user and the secret the
+    /// envelope keys are derived from.
+    pub fn session_for_key_id(&self, key_id: &str) -> Option<(String, String)> {
+        let sessions_guard = self.sessions.read().unwrap();
+        let session = sessions_guard
+            .values()
+            .find(|session| !session.key_id.is_empty() && session.key_id == key_id)?;
+        if let Ok(expires_at) = chrono::DateTime::parse_from_rfc3339(&session.expires_at) {
+            if expires_at < chrono::Utc::now() {
+                return None;
+            }
+        }
+        if session.secret.is_empty() {
+            return None;
+        }
+        Some((session.username.clone(), session.secret.clone()))
+    }
+
+    /// Accepts an envelope sequence number exactly once. On rejection returns the sequence
+    /// number the client should resume from, which it needs after the server restarts.
+    pub fn accept_sequence(&self, key_id: &str, seq: u64) -> Result<(), u64> {
+        let mut sessions_guard = self.sessions.write().unwrap();
+        let Some(session) = sessions_guard
+            .values_mut()
+            .find(|session| !session.key_id.is_empty() && session.key_id == key_id)
+        else {
+            return Err(0);
+        };
+
+        let mut window = crate::secure::ReplayWindow {
+            high: session.replay_high,
+            mask: session.replay_mask,
+        };
+        if !window.accept(seq) {
+            return Err(session.replay_high + 1);
+        }
+        session.replay_high = window.high;
+        session.replay_mask = window.mask;
+        drop(sessions_guard);
+
+        self.persist_sessions_debounced();
+        Ok(())
+    }
+
+    /// The replay window changes on every request, so writes are coalesced instead of rewriting
+    /// the whole session file each time. The restart margin covers whatever hasn't landed yet.
+    fn persist_sessions_debounced(&self) {
+        let now = chrono::Utc::now().timestamp_millis();
+        {
+            let mut last = self.sessions_persisted_at.write().unwrap();
+            if now - *last < SESSION_PERSIST_INTERVAL_MS {
+                return;
+            }
+            *last = now;
+        }
+        let _ = self.save_sessions();
+    }
+
+    /// Invalidates a single access token. Returns whether a matching session existed.
+    pub fn revoke_token(&self, token: &str) -> bool {
+        let token_hash = Self::hash_token(token);
+        let removed = self.sessions.write().unwrap().remove(&token_hash).is_some();
+        if removed {
+            let _ = self.save_sessions();
+        }
+        removed
     }
 
     pub fn authenticate_token(&self, token: &str) -> Option<String> {
@@ -227,10 +365,12 @@ impl AccountManager {
         }
 
         let token_hash = Self::hash_token(token);
-        let user = sessions_guard.get(&token_hash).map(|session| session.username.clone());
+        let user = sessions_guard
+            .get(&token_hash)
+            .map(|session| session.username.clone());
         drop(sessions_guard);
 
-        let _ = self.save_sessions();
+        self.persist_sessions_debounced();
         user
     }
 
@@ -243,4 +383,3 @@ impl AccountManager {
             .unwrap_or(false)
     }
 }
-

@@ -1,5 +1,5 @@
 name: Flux
-version: "1.0.27"
+version: "1.0.28"
 slug: flux
 description: Flux manages your digital life - all stored locally.
 arch:
@@ -8,10 +8,10 @@ arch:
 startup: services
 boot: auto
 ingress: true
-ingress_port: 8080
-panel_icon: mdi:image-multiple-outline
+ingress_port: 3589
+panel_icon: mdi:nas
 ports:
-  8080/tcp: 8080
+  3589/tcp: 3589
 map:
   - config:rw
   - share:rw

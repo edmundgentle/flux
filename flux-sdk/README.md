@@ -45,7 +45,7 @@ The client always talks to the built-in Flux cloud relay URL; it is fixed and ca
 
 ## Local-first routing
 
-After cloud sign-in, every request (`search`, `uploadFile`, `downloadFile`, `getConfig`) automatically probes the default local address (`http://homeassistant.local:8080`). When it is reachable, the SDK exchanges the cloud session for a short-lived local token and prefers the local network connection. Otherwise, it immediately uses the cloud relay. `client.getTransportMode()` returns `'local'` or `'relay'` to reflect whichever path served the most recent request.
+After cloud sign-in, every request (`search`, `uploadFile`, `downloadFile`, `getConfig`) automatically probes the default local address (`http://homeassistant.local:3589`). When it is reachable, the SDK exchanges the cloud session for a short-lived local token and prefers the local network connection. Otherwise, it immediately uses the cloud relay. `client.getTransportMode()` returns `'local'` or `'relay'` to reflect whichever path served the most recent request.
 
 To avoid a slow timeout when you already know the device is off the home network (e.g. on cellular data), pass a `networkMonitor` so the SDK can skip the local attempt entirely:
 

@@ -34,11 +34,13 @@ impl StorageManager {
     pub fn list_mounts() -> Result<Vec<MountInfo>, String> {
         let path = Path::new("/proc/mounts");
         if !path.exists() {
-            return Err("System mounts file /proc/mounts not found. Not running on Linux?".to_string());
+            return Err(
+                "System mounts file /proc/mounts not found. Not running on Linux?".to_string(),
+            );
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read /proc/mounts: {}", e))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Failed to read /proc/mounts: {}", e))?;
 
         let mut mounts = Vec::new();
         for line in content.lines() {
@@ -67,8 +69,8 @@ impl StorageManager {
         }
 
         let mut results = Vec::new();
-        let entries = fs::read_dir(path)
-            .map_err(|e| format!("Failed to read directory entries: {}", e))?;
+        let entries =
+            fs::read_dir(path).map_err(|e| format!("Failed to read directory entries: {}", e))?;
 
         for entry in entries.flatten() {
             let entry_path = entry.path();
@@ -93,7 +95,12 @@ impl StorageManager {
     }
 
     /// Mounts an external drive or network share
-    pub fn mount_device(source: &str, target: &str, fs_type: Option<&str>, options: Option<&str>) -> Result<(), String> {
+    pub fn mount_device(
+        source: &str,
+        target: &str,
+        fs_type: Option<&str>,
+        options: Option<&str>,
+    ) -> Result<(), String> {
         let target_path = Path::new(target);
         if !target_path.exists() {
             fs::create_dir_all(target_path)

@@ -25,6 +25,17 @@ pub struct VisionResult {
     /// from a locality-sensitive hash of its Facenet512 embedding so photos of the same person
     /// tend to land in the same bucket.
     pub face_fingerprints: Vec<String>,
+    /// Per-face box + embedding, or `None` when the face/embedding models aren't loaded (so
+    /// callers can tell "no faces" apart from "couldn't look for faces").
+    pub faces: Option<Vec<FaceDetection>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FaceDetection {
+    /// `[x, y, width, height]`, normalized to 0..1 of the analyzed image.
+    pub bbox: [f32; 4],
+    /// L2-normalized Facenet512 embedding.
+    pub embedding: Vec<f32>,
 }
 
 struct VisionModels {
@@ -61,7 +72,10 @@ fn load_session(dir: &Path, file_name: &str) -> Option<Session> {
     match result {
         Ok(session) => Some(session),
         Err(e) => {
-            warn!("Vision model {:?} unavailable, related detection will be skipped: {}", path, e);
+            warn!(
+                "Vision model {:?} unavailable, related detection will be skipped: {}",
+                path, e
+            );
             None
         }
     }
@@ -78,6 +92,12 @@ fn get_models() -> &'static VisionModels {
     })
 }
 
+/// Whether both the face detector and the embedding model are loaded.
+pub fn face_analysis_available() -> bool {
+    let models = get_models();
+    models.face_session.is_some() && models.embedding_session.is_some()
+}
+
 /// Runs object detection + face detection/fingerprinting on an already-decoded image.
 /// Returns an empty/default result (never an error) for any model that isn't available.
 pub fn analyze(img: &DynamicImage) -> VisionResult {
@@ -88,17 +108,34 @@ pub fn analyze(img: &DynamicImage) -> VisionResult {
         Vec::new()
     });
 
-    let (face_count, face_fingerprints) = detect_faces(models, img).unwrap_or_else(|e| {
-        warn!("Face detection/fingerprinting failed: {}", e);
-        (0, Vec::new())
-    });
+    let faces_supported = face_analysis_available();
+    let (face_count, faces) = match detect_faces(models, img) {
+        Ok(result) => (result.0, faces_supported.then_some(result.1)),
+        Err(e) => {
+            warn!("Face detection/fingerprinting failed: {}", e);
+            (0, None)
+        }
+    };
+    let face_fingerprints = faces
+        .iter()
+        .flatten()
+        .map(|face| face_fingerprint(&face.embedding))
+        .collect();
 
-    VisionResult { object_tags, face_count, face_fingerprints }
+    VisionResult {
+        object_tags,
+        face_count,
+        face_fingerprints,
+        faces,
+    }
 }
 
 /// Greedy non-max suppression over (score, class_id, [x1,y1,x2,y2]) candidates, applied
 /// independently within each class.
-fn nms_per_class(mut candidates: Vec<(f32, u32, [f32; 4])>, iou_threshold: f32) -> Vec<(f32, u32, [f32; 4])> {
+fn nms_per_class(
+    mut candidates: Vec<(f32, u32, [f32; 4])>,
+    iou_threshold: f32,
+) -> Vec<(f32, u32, [f32; 4])> {
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut kept: Vec<(f32, u32, [f32; 4])> = Vec::new();
     for candidate in candidates {
@@ -156,9 +193,15 @@ fn detect_objects(models: &VisionModels, img: &DynamicImage) -> Result<Vec<Strin
     };
 
     let input = Tensor::from_array(to_yolo_input(img, INPUT_SIZE)).map_err(|e| e.to_string())?;
-    let mut session = object_session.lock().map_err(|_| "object session lock poisoned".to_string())?;
-    let outputs = session.run(ort::inputs!["images" => input]).map_err(|e| e.to_string())?;
-    let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
+    let mut session = object_session
+        .lock()
+        .map_err(|_| "object session lock poisoned".to_string())?;
+    let outputs = session
+        .run(ort::inputs!["images" => input])
+        .map_err(|e| e.to_string())?;
+    let (shape, data) = outputs[0]
+        .try_extract_tensor::<f32>()
+        .map_err(|e| e.to_string())?;
     let shape = shape.to_vec();
     let data = data.to_vec();
     drop(outputs);
@@ -208,9 +251,12 @@ fn detect_objects(models: &VisionModels, img: &DynamicImage) -> Result<Vec<Strin
     Ok(tags)
 }
 
-/// Detects faces and fingerprints each one via its Facenet512 embedding.
-/// Returns (face_count, face_fingerprints).
-fn detect_faces(models: &VisionModels, img: &DynamicImage) -> Result<(usize, Vec<String>), String> {
+/// Detects faces and embeds each one with Facenet512.
+/// Returns (face_count, faces).
+fn detect_faces(
+    models: &VisionModels,
+    img: &DynamicImage,
+) -> Result<(usize, Vec<FaceDetection>), String> {
     const INPUT_SIZE: u32 = 640;
     const CONFIDENCE_THRESHOLD: f32 = 0.5;
     const IOU_THRESHOLD: f32 = 0.45;
@@ -223,9 +269,15 @@ fn detect_faces(models: &VisionModels, img: &DynamicImage) -> Result<(usize, Vec
     let (orig_width, orig_height) = img.dimensions();
     let input = Tensor::from_array(to_yolo_input(img, INPUT_SIZE)).map_err(|e| e.to_string())?;
 
-    let mut session = face_session.lock().map_err(|_| "face session lock poisoned".to_string())?;
-    let outputs = session.run(ort::inputs!["images" => input]).map_err(|e| e.to_string())?;
-    let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
+    let mut session = face_session
+        .lock()
+        .map_err(|_| "face session lock poisoned".to_string())?;
+    let outputs = session
+        .run(ort::inputs!["images" => input])
+        .map_err(|e| e.to_string())?;
+    let (shape, data) = outputs[0]
+        .try_extract_tensor::<f32>()
+        .map_err(|e| e.to_string())?;
     let shape = shape.to_vec();
     let data = data.to_vec();
     drop(outputs);
@@ -257,7 +309,7 @@ fn detect_faces(models: &VisionModels, img: &DynamicImage) -> Result<(usize, Vec
     let scale_x = orig_width as f32 / INPUT_SIZE as f32;
     let scale_y = orig_height as f32 / INPUT_SIZE as f32;
 
-    let mut face_fingerprints = Vec::new();
+    let mut faces = Vec::new();
     for (_, _, b) in kept.iter().take(MAX_FACES_TO_PROCESS) {
         let x1 = (b[0] * scale_x).max(0.0) as u32;
         let y1 = (b[1] * scale_y).max(0.0) as u32;
@@ -270,15 +322,23 @@ fn detect_faces(models: &VisionModels, img: &DynamicImage) -> Result<(usize, Vec
         let crop = img.crop_imm(x1, y1, x2 - x1, y2 - y1);
 
         if let Ok(embedding) = compute_face_embedding(models, &crop) {
-            face_fingerprints.push(face_fingerprint(&embedding));
+            faces.push(FaceDetection {
+                bbox: [
+                    x1 as f32 / orig_width as f32,
+                    y1 as f32 / orig_height as f32,
+                    (x2 - x1) as f32 / orig_width as f32,
+                    (y2 - y1) as f32 / orig_height as f32,
+                ],
+                embedding,
+            });
         }
     }
 
-    Ok((face_count, face_fingerprints))
+    Ok((face_count, faces))
 }
 
 /// Runs the Facenet512 embedding model on a cropped face, returning its 512-d L2-normalized
-/// embedding vector. Used purely for identity fingerprinting, not stored as raw data.
+/// embedding vector, used for fingerprinting and for face grouping (see `faces.rs`).
 ///
 /// Input layout is NHWC (`1x160x160x3`), matching `models/export_facenet_onnx.py`'s
 /// channels-last Keras export.
@@ -289,7 +349,9 @@ fn compute_face_embedding(models: &VisionModels, face: &DynamicImage) -> Result<
         return Err("embedding model not available".to_string());
     };
 
-    let resized = face.resize_exact(FACE_SIZE, FACE_SIZE, FilterType::Triangle).to_rgb8();
+    let resized = face
+        .resize_exact(FACE_SIZE, FACE_SIZE, FilterType::Triangle)
+        .to_rgb8();
     // FaceNet-style "prewhiten" normalization.
     let mut hwc = Array3::<f32>::zeros((FACE_SIZE as usize, FACE_SIZE as usize, 3));
     for y in 0..FACE_SIZE {
@@ -302,9 +364,15 @@ fn compute_face_embedding(models: &VisionModels, face: &DynamicImage) -> Result<
     }
     let input = Tensor::from_array(hwc.insert_axis(Axis(0))).map_err(|e| e.to_string())?;
 
-    let mut session = embedding_session.lock().map_err(|_| "embedding session lock poisoned".to_string())?;
-    let outputs = session.run(ort::inputs!["input" => input]).map_err(|e| e.to_string())?;
-    let embedding = outputs[0].try_extract_array::<f32>().map_err(|e| e.to_string())?;
+    let mut session = embedding_session
+        .lock()
+        .map_err(|_| "embedding session lock poisoned".to_string())?;
+    let outputs = session
+        .run(ort::inputs!["input" => input])
+        .map_err(|e| e.to_string())?;
+    let embedding = outputs[0]
+        .try_extract_array::<f32>()
+        .map_err(|e| e.to_string())?;
     let embedding: Vec<f32> = embedding.iter().copied().collect();
     drop(outputs);
     drop(session);
@@ -341,7 +409,8 @@ fn face_fingerprint(embedding: &[f32]) -> String {
 /// embedding dimension `dim`, used by `face_fingerprint`. Uses a fixed seed so the same
 /// embedding always hashes to the same fingerprint across runs.
 fn lsh_hyperplane_component(bit: u32, dim: u32) -> f32 {
-    let mut x = (bit as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ (dim as u64).wrapping_mul(0xBF58476D1CE4E5B9);
+    let mut x = (bit as u64).wrapping_mul(0x9E3779B97F4A7C15)
+        ^ (dim as u64).wrapping_mul(0xBF58476D1CE4E5B9);
     x ^= x >> 33;
     x = x.wrapping_mul(0xFF51AFD7ED558CCD);
     x ^= x >> 33;
@@ -353,16 +422,86 @@ fn lsh_hyperplane_component(bit: u32, dim: u32) -> f32 {
 /// The 80-class MS COCO label map used by Ultralytics YOLOv8 (indices 0..=79, no gaps).
 fn coco80_label(id: u32) -> Option<&'static str> {
     const LABELS: [&str; 80] = [
-        "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
-        "traffic_light", "fire_hydrant", "stop_sign", "parking_meter", "bench", "bird", "cat",
-        "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
-        "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports_ball",
-        "kite", "baseball_bat", "baseball_glove", "skateboard", "surfboard", "tennis_racket",
-        "bottle", "wine_glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
-        "sandwich", "orange", "broccoli", "carrot", "hot_dog", "pizza", "donut", "cake", "chair",
-        "couch", "potted_plant", "bed", "dining_table", "toilet", "tv", "laptop", "mouse",
-        "remote", "keyboard", "cell_phone", "microwave", "oven", "toaster", "sink", "refrigerator",
-        "book", "clock", "vase", "scissors", "teddy_bear", "hair_drier", "toothbrush",
+        "person",
+        "bicycle",
+        "car",
+        "motorcycle",
+        "airplane",
+        "bus",
+        "train",
+        "truck",
+        "boat",
+        "traffic_light",
+        "fire_hydrant",
+        "stop_sign",
+        "parking_meter",
+        "bench",
+        "bird",
+        "cat",
+        "dog",
+        "horse",
+        "sheep",
+        "cow",
+        "elephant",
+        "bear",
+        "zebra",
+        "giraffe",
+        "backpack",
+        "umbrella",
+        "handbag",
+        "tie",
+        "suitcase",
+        "frisbee",
+        "skis",
+        "snowboard",
+        "sports_ball",
+        "kite",
+        "baseball_bat",
+        "baseball_glove",
+        "skateboard",
+        "surfboard",
+        "tennis_racket",
+        "bottle",
+        "wine_glass",
+        "cup",
+        "fork",
+        "knife",
+        "spoon",
+        "bowl",
+        "banana",
+        "apple",
+        "sandwich",
+        "orange",
+        "broccoli",
+        "carrot",
+        "hot_dog",
+        "pizza",
+        "donut",
+        "cake",
+        "chair",
+        "couch",
+        "potted_plant",
+        "bed",
+        "dining_table",
+        "toilet",
+        "tv",
+        "laptop",
+        "mouse",
+        "remote",
+        "keyboard",
+        "cell_phone",
+        "microwave",
+        "oven",
+        "toaster",
+        "sink",
+        "refrigerator",
+        "book",
+        "clock",
+        "vase",
+        "scissors",
+        "teddy_bear",
+        "hair_drier",
+        "toothbrush",
     ];
     LABELS.get(id as usize).copied()
 }
@@ -379,7 +518,11 @@ mod tests {
     fn analyze_runs_end_to_end_without_panicking() {
         let mut buf = RgbImage::new(300, 300);
         for (x, y, pixel) in buf.enumerate_pixels_mut() {
-            *pixel = if (x / 20 + y / 20) % 2 == 0 { Rgb([200, 40, 40]) } else { Rgb([30, 30, 200]) };
+            *pixel = if (x / 20 + y / 20) % 2 == 0 {
+                Rgb([200, 40, 40])
+            } else {
+                Rgb([30, 30, 200])
+            };
         }
         let img = DynamicImage::ImageRgb8(buf);
 

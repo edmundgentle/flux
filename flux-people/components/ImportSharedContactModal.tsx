@@ -13,7 +13,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { ContactItem } from '../types/contact';
-import { parseVCard, parseContactJson, getDisplayName } from '../utils/contactUtils';
+import { parseVCard, getDisplayName } from '../utils/contactUtils';
 
 type Props = {
   visible: boolean;
@@ -53,8 +53,7 @@ export default function ImportSharedContactModal({
       const parsed = parseVCard(trimmed);
       setParsedPreview(parsed);
     } else if (trimmed.startsWith('{')) {
-      const parsed = parseContactJson(trimmed, 'shared_contact.json', Date.now());
-      setParsedPreview(parsed);
+      setParsedPreview(null);
     } else {
       // Treat plain text line-by-line as basic details
       const lines = trimmed.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -83,6 +82,8 @@ export default function ImportSharedContactModal({
     try {
       await onImport({
         ...parsedPreview,
+        id: undefined,
+        path: undefined,
         firstName,
         displayName: getDisplayName({ ...parsedPreview, firstName }),
       });
@@ -118,7 +119,7 @@ export default function ImportSharedContactModal({
           <View style={styles.infoBanner}>
             <Ionicons name="share-social-outline" size={24} color="#2563eb" style={{ marginRight: 10 }} />
             <Text style={styles.infoText}>
-              Paste a shared vCard string, JSON contact data, or contact text received from external apps.
+              Paste a shared vCard string or contact text received from external apps.
             </Text>
           </View>
 
@@ -127,7 +128,7 @@ export default function ImportSharedContactModal({
             style={styles.textArea}
             multiline
             numberOfLines={6}
-            placeholder="Paste BEGIN:VCARD ... END:VCARD or contact JSON here..."
+            placeholder="Paste BEGIN:VCARD ... END:VCARD or contact text here..."
             value={inputText}
             onChangeText={(val) => {
               setInputText(val);
