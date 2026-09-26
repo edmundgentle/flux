@@ -10,7 +10,8 @@
     "flux-people"
   ],
   "scripts": {
-    "build": "npm run build:cloud && npm run build:sdk && npm run build:photos && npm run build:notes && npm run build:people && npm run build:homeassistant",
+    "build": "npm run build:cloud",
+    "build:all": "npm run build:cloud && npm run build:sdk && npm run build:photos && npm run build:notes && npm run build:people && npm run build:homeassistant",
     "build:cloud": "npm --prefix flux-cloud run build",
     "build:sdk": "npm --prefix flux-sdk run build",
     "build:photos": "npm --prefix flux-photos run check",
